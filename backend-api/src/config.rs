@@ -12,6 +12,9 @@ pub struct Config {
     pub github_client_secret: Option<String>,
     pub session_cookie_name: String,
     pub blocked_unlink_wallets: Vec<String>,
+    pub internal_hmac_secret: Option<String>,
+    pub base_rpc_url: Option<String>,
+    pub staking_contract_address: Option<String>,
 }
 
 impl Config {
@@ -38,6 +41,9 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(str::to_lowercase)
             .collect::<Vec<_>>();
+        let internal_hmac_secret = env::var("INTERNAL_HMAC_SECRET").ok();
+        let base_rpc_url = env::var("BASE_RPC_URL").ok();
+        let staking_contract_address = env::var("STAKING_CONTRACT_ADDRESS").ok();
         let database_url = env::var("DATABASE_URL")?;
 
         Ok(Self {
@@ -51,6 +57,9 @@ impl Config {
             github_client_secret,
             session_cookie_name,
             blocked_unlink_wallets,
+            internal_hmac_secret,
+            base_rpc_url,
+            staking_contract_address,
         })
     }
 }

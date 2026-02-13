@@ -95,4 +95,27 @@ impl GithubOAuthService {
             .await
             .map_err(|e| ApiError::Internal(e.into()))
     }
+
+    pub async fn resolve_login(&self, login: &str) -> ApiResult<Option<GithubUserResponse>> {
+        let response = self
+            .client
+            .get(format!("https://api.github.com/users/{login}"))
+            .header("User-Agent", "stake-to-contribute-backend")
+            .send()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(ApiError::validation("GitHub login resolution failed"));
+        }
+
+        let payload = response
+            .json::<GithubUserResponse>()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+        Ok(Some(payload))
+    }
 }
