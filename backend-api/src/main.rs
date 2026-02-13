@@ -30,6 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     let state = Arc::new(AppState::new(pool, config.clone()));
+    services::jobs::start_background_jobs(state.clone());
     let app = routes::router(state);
 
     let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
