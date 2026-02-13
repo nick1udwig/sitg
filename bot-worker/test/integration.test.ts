@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createAppServer } from "../src/server.js";
 import type { AppConfig } from "../src/config.js";
+import { buildInternalHmacSignature } from "../src/crypto.js";
 
 type FetchCall = {
   url: string;
@@ -21,6 +22,7 @@ const makeConfig = (stateFilePath: string): AppConfig => {
   return {
     port: 0,
     githubWebhookSecret: "webhook-secret",
+    githubApiBaseUrl: "https://api.github.com",
     backendBaseUrl: "http://backend.local",
     backendServiceToken: "backend-token",
     backendBotKeyId: "bck_test_123",
@@ -99,9 +101,11 @@ test("webhook opened event posts gate comment based on backend REQUIRE_STAKE", a
       const signature = headers.get("x-stc-signature");
       assert.ok(timestamp);
       assert.ok(signature);
-      const expected = `sha256=${createHmac("sha256", config.backendInternalHmacSecret)
-        .update(`${timestamp}.00000000-0000-0000-0000-000000000123`)
-        .digest("hex")}`;
+      const expected = buildInternalHmacSignature(
+        config.backendInternalHmacSecret,
+        Number.parseInt(timestamp, 10),
+        "00000000-0000-0000-0000-000000000123",
+      );
       assert.equal(signature, expected);
       return new Response(
         JSON.stringify({
@@ -327,9 +331,11 @@ test("outbox polling claims actions, executes close, and acks success", async ()
       const timestamp = headers.get("x-stc-timestamp");
       const signature = headers.get("x-stc-signature");
       assert.ok(timestamp);
-      const expected = `sha256=${createHmac("sha256", config.backendInternalHmacSecret)
-        .update(`${timestamp}.bot-actions-claim:${config.workerId}`)
-        .digest("hex")}`;
+      const expected = buildInternalHmacSignature(
+        config.backendInternalHmacSecret,
+        Number.parseInt(timestamp, 10),
+        `bot-actions-claim:${config.workerId}`,
+      );
       assert.equal(signature, expected);
       if (!claimedOnce) {
         claimedOnce = true;
@@ -450,9 +456,11 @@ test("deadline run closes PR and posts timeout comment from backend CLOSE_PR act
       const signature = headers.get("x-stc-signature");
       assert.ok(timestamp);
       assert.ok(signature);
-      const expected = `sha256=${createHmac("sha256", config.backendInternalHmacSecret)
-        .update(`${timestamp}.22222222-2222-2222-2222-222222222222`)
-        .digest("hex")}`;
+      const expected = buildInternalHmacSignature(
+        config.backendInternalHmacSecret,
+        Number.parseInt(timestamp, 10),
+        "22222222-2222-2222-2222-222222222222",
+      );
       assert.equal(signature, expected);
       return new Response(
         JSON.stringify({

@@ -40,6 +40,7 @@ Note: file-based state is single-instance only. For horizontal scaling, move sta
    - Set `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_HMAC_SECRET` from bot key provisioning in SaaS.
    - Backend internal auth uses `x-stc-key-id`, `x-stc-timestamp`, and `x-stc-signature`.
    - `BACKEND_SERVICE_TOKEN` is optional and only used if your backend also accepts bearer auth.
+   - Optional: set `GITHUB_API_BASE_URL` to a mock API for local E2E.
    - Set `WORKER_ID` to a stable identifier per running worker instance.
    - Keep `OUTBOX_POLLING_ENABLED=true` for normal operation.
    - `ENABLE_LOCAL_DEADLINE_TIMERS` should usually remain `false`.

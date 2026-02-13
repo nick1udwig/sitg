@@ -4,6 +4,7 @@ import { fetchWithRetry } from "./retry.js";
 type GitHubClientOptions = {
   appId: string;
   privateKeyPem: string;
+  apiBaseUrl: string;
 };
 
 type RepoRef = {
@@ -30,10 +31,12 @@ const buildTimeoutMarker = (challengeId: string): string => `<!-- stake-to-contr
 export class GitHubClient {
   private readonly appId: string;
   private readonly privateKeyPem: string;
+  private readonly apiBaseUrl: string;
 
   constructor(options: GitHubClientOptions) {
     this.appId = options.appId;
     this.privateKeyPem = options.privateKeyPem;
+    this.apiBaseUrl = options.apiBaseUrl.replace(/\/+$/, "");
   }
 
   async upsertGateComment(
@@ -61,7 +64,7 @@ export class GitHubClient {
   async closePullRequest(installationId: number, repoFullName: string, prNumber: number): Promise<void> {
     const token = await this.getInstallationToken(installationId);
     const { owner, repo } = parseRepo(repoFullName);
-    const res = await fetchWithRetry(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, {
+    const res = await fetchWithRetry(`${this.apiBaseUrl}/repos/${owner}/${repo}/pulls/${prNumber}`, {
       method: "PATCH",
       headers: this.defaultHeaders(token),
       body: JSON.stringify({ state: "closed" }),
@@ -85,7 +88,7 @@ export class GitHubClient {
     const existing = await this.findCommentByMarker(token, owner, repo, issueNumber, marker);
     if (existing) {
       const updateRes = await fetchWithRetry(
-        `https://api.github.com/repos/${owner}/${repo}/issues/comments/${existing.id}`,
+        `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/comments/${existing.id}`,
         {
           method: "PATCH",
           headers: this.defaultHeaders(token),
@@ -98,11 +101,14 @@ export class GitHubClient {
       return;
     }
 
-    const createRes = await fetchWithRetry(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
-      method: "POST",
-      headers: this.defaultHeaders(token),
-      body: JSON.stringify({ body }),
-    });
+    const createRes = await fetchWithRetry(
+      `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+      {
+        method: "POST",
+        headers: this.defaultHeaders(token),
+        body: JSON.stringify({ body }),
+      },
+    );
     if (!createRes.ok) {
       throw new Error(`GitHub create issue comment failed (${createRes.status})`);
     }
@@ -116,7 +122,7 @@ export class GitHubClient {
     marker: string,
   ): Promise<CommentRecord | null> {
     const res = await fetchWithRetry(
-      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
+      `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
       {
         method: "GET",
         headers: this.defaultHeaders(token),
@@ -131,7 +137,7 @@ export class GitHubClient {
 
   private async getInstallationToken(installationId: number): Promise<string> {
     const jwt = signGitHubAppJwt(this.appId, this.privateKeyPem);
-    const res = await fetchWithRetry(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+    const res = await fetchWithRetry(`${this.apiBaseUrl}/app/installations/${installationId}/access_tokens`, {
       method: "POST",
       headers: {
         accept: "application/vnd.github+json",
@@ -151,7 +157,7 @@ export class GitHubClient {
 
   async getRepositoryFullNameById(installationId: number, repoId: number): Promise<string> {
     const token = await this.getInstallationToken(installationId);
-    const res = await fetchWithRetry(`https://api.github.com/repositories/${repoId}`, {
+    const res = await fetchWithRetry(`${this.apiBaseUrl}/repositories/${repoId}`, {
       method: "GET",
       headers: this.defaultHeaders(token),
     });

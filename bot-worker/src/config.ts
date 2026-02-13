@@ -8,6 +8,7 @@ const must = (value: string | undefined, name: string): string => {
 export type AppConfig = {
   port: number;
   githubWebhookSecret: string;
+  githubApiBaseUrl: string;
   backendBaseUrl: string;
   backendServiceToken?: string;
   backendBotKeyId: string;
@@ -56,6 +57,7 @@ export const readConfig = (): AppConfig => {
   return {
     port,
     githubWebhookSecret: must(process.env.GITHUB_WEBHOOK_SECRET, "GITHUB_WEBHOOK_SECRET"),
+    githubApiBaseUrl: (process.env.GITHUB_API_BASE_URL ?? "https://api.github.com").replace(/\/+$/, ""),
     backendBaseUrl: must(process.env.BACKEND_BASE_URL, "BACKEND_BASE_URL").replace(/\/+$/, ""),
     backendServiceToken: process.env.BACKEND_SERVICE_TOKEN,
     backendBotKeyId: must(process.env.BACKEND_BOT_KEY_ID, "BACKEND_BOT_KEY_ID"),

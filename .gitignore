@@ -2,4 +2,5 @@ frontend-web/tsconfig.tsbuildinfo
 **/dist
 **/node_modules
 **/target
+.e2e
 *.swp

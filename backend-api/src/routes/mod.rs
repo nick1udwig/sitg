@@ -966,7 +966,8 @@ async fn wallet_link_challenge(
     let user = require_current_user(&state, &jar).await?;
     let now = Utc::now();
     let nonce = Uuid::new_v4();
-    let expires_at = now + Duration::minutes(10);
+    // Postgres stores timestamptz with microsecond precision; normalize before issuing message.
+    let expires_at = truncate_to_micros(now + Duration::minutes(10));
 
     sqlx::query(
         "insert into wallet_link_challenges (id, user_id, nonce, expires_at, used_at, created_at) values ($1, $2, $3, $4, null, $5)",
@@ -1403,7 +1404,7 @@ async fn internal_bot_actions_claim(
               select 1 from bot_installation_bindings b2
               where b2.bot_client_id = $4 and b2.installation_id = r2.installation_id
             )
-          order by created_at asc
+          order by a2.created_at asc
           limit $1
           for update skip locked
         )
@@ -1712,6 +1713,10 @@ fn wallet_link_message(github_user_id: i64, nonce: Uuid, expires_at: chrono::Dat
     )
 }
 
+fn truncate_to_micros(value: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    chrono::DateTime::<Utc>::from_timestamp_micros(value.timestamp_micros()).unwrap_or(value)
+}
+
 fn sanitize_redirect_url(
     candidate: Option<String>,
     allowed_prefix: &str,
@@ -1819,7 +1824,7 @@ fn build_token(size: usize) -> String {
 mod tests {
     use super::*;
     use crate::models::db::RepoConfigRow;
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Timelike};
 
     #[test]
     fn converts_eth_to_wei() {
@@ -1892,6 +1897,24 @@ mod tests {
             "https://app.example.com",
         );
         assert_eq!(fallback, "https://app.example.com");
+    }
+
+    #[test]
+    fn wallet_link_message_is_stable_after_microsecond_roundtrip() {
+        let nonce = Uuid::parse_str("2c6dc47f-00ea-401d-8d96-13794ca39f35").expect("uuid");
+        let raw = Utc
+            .with_ymd_and_hms(2026, 2, 13, 23, 10, 5)
+            .unwrap()
+            .with_nanosecond(821_781_504)
+            .expect("nanoseconds");
+        let normalized = truncate_to_micros(raw);
+
+        let issued = wallet_link_message(2002, nonce, normalized);
+        let from_db =
+            chrono::DateTime::<Utc>::from_timestamp_micros(normalized.timestamp_micros()).expect("from micros");
+        let verified = wallet_link_message(2002, nonce, from_db);
+
+        assert_eq!(issued, verified);
     }
 
 }

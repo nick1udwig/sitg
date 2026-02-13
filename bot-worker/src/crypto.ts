@@ -1,4 +1,4 @@
-import { createHmac, createSign, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, createSign, timingSafeEqual } from "node:crypto";
 
 const toBase64Url = (raw: string | Buffer): string =>
   Buffer.from(raw)
@@ -47,7 +47,8 @@ export const verifyGitHubWebhookSignature = (
 };
 
 export const buildInternalHmacSignature = (secret: string, unixTimestampSeconds: number, message: string): string => {
+  const derivedKey = createHash("sha256").update(secret).digest();
   const payload = `${unixTimestampSeconds}.${message}`;
-  const digest = createHmac("sha256", secret).update(payload).digest("hex");
+  const digest = createHmac("sha256", derivedKey).update(payload).digest("hex");
   return `sha256=${digest}`;
 };

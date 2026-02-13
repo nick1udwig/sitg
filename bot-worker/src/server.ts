@@ -369,6 +369,7 @@ export const createAppServer = (config: AppConfig) => {
   const github = new GitHubClient({
     appId: config.githubAppId,
     privateKeyPem: config.githubAppPrivateKey,
+    apiBaseUrl: config.githubApiBaseUrl,
   });
   const stateStore = new BotStateStore(config.stateFilePath);
   const metrics: MetricsStore = {
