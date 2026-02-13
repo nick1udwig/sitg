@@ -66,6 +66,14 @@ pub struct BotActionRow {
     pub payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct BotClientSummaryRow {
+    pub id: Uuid,
+    pub name: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoinGeckoPriceEnvelope {
     pub ethereum: CoinGeckoPrice,

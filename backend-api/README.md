@@ -21,7 +21,6 @@ export API_BASE_URL=http://localhost:8080
 export GITHUB_CLIENT_ID=...
 export GITHUB_CLIENT_SECRET=...
 export GITHUB_OWNER_CHECK_TOKEN=... # token used for repo permission checks
-export INTERNAL_HMAC_SECRET=...
 export BASE_RPC_URL=https://mainnet.base.org
 export STAKING_CONTRACT_ADDRESS=0x...
 # optional: comma-separated wallets for local unlink stake-block simulation
@@ -35,6 +34,7 @@ export INTERNAL_HMAC_SECRET=replace_me
 - `migrations/0002_auth_wallet.sql`
 - `migrations/0003_internal_replay_and_outbox.sql`
 - `migrations/0004_bot_action_results.sql`
+- `migrations/0005_bot_tenant_auth.sql`
 
 Note: service startup also runs embedded migrations automatically.
 
@@ -53,6 +53,7 @@ cargo test
 ## Internal Endpoint Auth
 
 Internal endpoints require:
+- `x-stc-key-id`: bot key id
 - `x-stc-timestamp`: unix seconds
 - `x-stc-signature`: `sha256=<hex-hmac>`
 
@@ -70,6 +71,10 @@ Where message is:
 
 Internal replay protection:
 - Signatures are single-use and persisted in `internal_request_replays`.
+
+Tenant auth model:
+- `x-stc-key-id` resolves to `bot_client_keys`.
+- Requests are authorized against `bot_installation_bindings`.
 
 ## Background Jobs
 

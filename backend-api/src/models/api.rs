@@ -242,3 +242,37 @@ pub struct BotActionResultResponse {
     pub id: Uuid,
     pub status: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct CreateBotClientRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BotClientSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BotClientDetailResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub status: String,
+    pub key_ids: Vec<String>,
+    pub installation_ids: Vec<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateBotKeyResponse {
+    pub key_id: String,
+    pub secret: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetInstallationBindingsRequest {
+    pub installation_ids: Vec<i64>,
+}

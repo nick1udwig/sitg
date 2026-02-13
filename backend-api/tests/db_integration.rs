@@ -21,6 +21,9 @@ async fn apply_migrations(pool: &PgPool) {
     pool.execute(include_str!("../migrations/0004_bot_action_results.sql"))
         .await
         .expect("apply 0004");
+    pool.execute(include_str!("../migrations/0005_bot_tenant_auth.sql"))
+        .await
+        .expect("apply 0005");
 }
 
 #[tokio::test]

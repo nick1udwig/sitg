@@ -9,11 +9,9 @@ use axum::{
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{Duration, Utc};
-use hmac::{Hmac, Mac};
 use rand::{Rng, distributions::Alphanumeric};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
-use sha2::Sha256;
 use time::Duration as CookieDuration;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use uuid::Uuid;
@@ -29,19 +27,24 @@ use crate::{
             RepoConfigPutRequest, RepoConfigResponse, ResolveLoginsRequest, ResolveLoginsResponse,
             ResolvedLogin, ThresholdResponse, TypedDataDomain, TypedDataMessage,
             BotActionClaimRequest, BotActionClaimResponse, BotActionItem, BotActionResultRequest,
-            BotActionResultResponse,
+            BotActionResultResponse, BotClientDetailResponse, BotClientSummary,
+            CreateBotClientRequest, CreateBotKeyResponse, SetInstallationBindingsRequest,
             WalletLinkChallengeResponse, WalletLinkConfirmRequest, WalletLinkConfirmResponse,
             WhitelistPutRequest,
         },
-        db::{BotActionRow, ChallengeRow, CurrentUserRow, RepoConfigRow, WalletLinkChallengeRow},
+        db::{
+            BotActionRow, BotClientSummaryRow, ChallengeRow, CurrentUserRow, RepoConfigRow,
+            WalletLinkChallengeRow,
+        },
     },
     services::signature_service::{
         recover_eip712_pr_confirmation_address, recover_personal_sign_address, uuid_to_bytes32_hex,
         uuid_to_uint256_decimal,
     },
+    services::internal_auth::{
+        ensure_installation_bound, verify_internal_request as verify_internal_with_key_id,
+    },
 };
-
-type HmacSha256 = Hmac<Sha256>;
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -50,6 +53,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/github/callback", get(auth_github_callback))
         .route("/api/v1/auth/logout", post(auth_logout))
         .route("/api/v1/me", get(me))
+        .route("/api/v1/bot-clients", get(list_bot_clients).post(create_bot_client))
+        .route("/api/v1/bot-clients/{bot_client_id}", get(get_bot_client))
+        .route(
+            "/api/v1/bot-clients/{bot_client_id}/keys",
+            post(create_bot_client_key),
+        )
+        .route(
+            "/api/v1/bot-clients/{bot_client_id}/keys/{key_id}/revoke",
+            post(revoke_bot_client_key),
+        )
+        .route(
+            "/api/v1/bot-clients/{bot_client_id}/installation-bindings",
+            put(set_bot_installation_bindings),
+        )
         .route(
             "/api/v1/repos/{repo_id}/config",
             get(get_repo_config).put(put_repo_config),
@@ -237,6 +254,225 @@ async fn me(
         github_user_id: user.github_user_id,
         github_login: user.github_login,
     }))
+}
+
+async fn list_bot_clients(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> ApiResult<Json<Vec<BotClientSummary>>> {
+    let user = require_current_user(&state, &jar).await?;
+    let rows: Vec<BotClientSummaryRow> = sqlx::query_as(
+        "select id, name, status, created_at from bot_clients where owner_user_id = $1 order by created_at desc",
+    )
+    .bind(user.id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let items = rows
+        .into_iter()
+        .map(|r| BotClientSummary {
+            id: r.id,
+            name: r.name,
+            status: r.status,
+            created_at: r.created_at,
+        })
+        .collect();
+    Ok(Json(items))
+}
+
+async fn create_bot_client(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Json(payload): Json<CreateBotClientRequest>,
+) -> ApiResult<Json<BotClientSummary>> {
+    let user = require_current_user(&state, &jar).await?;
+    let name = payload.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::validation("name is required"));
+    }
+
+    let now = Utc::now();
+    let id = Uuid::new_v4();
+    let row: BotClientSummaryRow = sqlx::query_as(
+        r#"
+        insert into bot_clients (id, owner_user_id, name, status, created_at, updated_at)
+        values ($1, $2, $3, 'ACTIVE', $4, $4)
+        returning id, name, status, created_at
+        "#,
+    )
+    .bind(id)
+    .bind(user.id)
+    .bind(name)
+    .bind(now)
+    .fetch_one(&state.pool)
+    .await?;
+
+    Ok(Json(BotClientSummary {
+        id: row.id,
+        name: row.name,
+        status: row.status,
+        created_at: row.created_at,
+    }))
+}
+
+async fn get_bot_client(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Path(bot_client_id): Path<Uuid>,
+) -> ApiResult<Json<BotClientDetailResponse>> {
+    let user = require_current_user(&state, &jar).await?;
+    ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
+
+    let (id, name, status): (Uuid, String, String) = sqlx::query_as(
+        "select id, name, status from bot_clients where id = $1",
+    )
+    .bind(bot_client_id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    let key_ids: Vec<String> = sqlx::query_scalar(
+        "select key_id from bot_client_keys where bot_client_id = $1 and revoked_at is null order by created_at desc",
+    )
+    .bind(bot_client_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let installation_ids: Vec<i64> = sqlx::query_scalar(
+        "select installation_id from bot_installation_bindings where bot_client_id = $1 order by installation_id asc",
+    )
+    .bind(bot_client_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(BotClientDetailResponse {
+        id,
+        name,
+        status,
+        key_ids,
+        installation_ids,
+    }))
+}
+
+async fn create_bot_client_key(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Path(bot_client_id): Path<Uuid>,
+) -> ApiResult<Json<CreateBotKeyResponse>> {
+    let user = require_current_user(&state, &jar).await?;
+    ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
+
+    let key_id = format!("bck_live_{}", build_token(12));
+    let secret = format!("stcbs_live_{}", build_token(40));
+    let now = Utc::now();
+
+    sqlx::query(
+        r#"
+        insert into bot_client_keys (key_id, bot_client_id, secret_hash, active, last_used_at, revoked_at, created_at)
+        values ($1, $2, $3, true, null, null, $4)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(bot_client_id)
+    .bind(&secret)
+    .bind(now)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(Json(CreateBotKeyResponse {
+        key_id,
+        secret,
+        created_at: now,
+    }))
+}
+
+async fn revoke_bot_client_key(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Path((bot_client_id, key_id)): Path<(Uuid, String)>,
+) -> ApiResult<StatusCode> {
+    let user = require_current_user(&state, &jar).await?;
+    ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
+
+    sqlx::query(
+        "update bot_client_keys set active = false, revoked_at = $3 where bot_client_id = $1 and key_id = $2",
+    )
+    .bind(bot_client_id)
+    .bind(key_id)
+    .bind(Utc::now())
+    .execute(&state.pool)
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_bot_installation_bindings(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Path(bot_client_id): Path<Uuid>,
+    Json(payload): Json<SetInstallationBindingsRequest>,
+) -> ApiResult<StatusCode> {
+    let user = require_current_user(&state, &jar).await?;
+    ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
+
+    let mut tx = state.pool.begin().await?;
+
+    for installation_id in &payload.installation_ids {
+        let installation_owner: Option<String> = sqlx::query_scalar(
+            "select account_login from github_installations where installation_id = $1",
+        )
+        .bind(*installation_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(owner_login) = installation_owner else {
+            return Err(ApiError::validation("unknown installation_id"));
+        };
+        if !owner_login.eq_ignore_ascii_case(&user.github_login) {
+            return Err(ApiError::Forbidden);
+        }
+    }
+
+    let conflict: Option<i64> = sqlx::query_scalar(
+        r#"
+        select installation_id
+        from bot_installation_bindings
+        where installation_id = any($1) and bot_client_id <> $2
+        limit 1
+        "#,
+    )
+    .bind(&payload.installation_ids)
+    .bind(bot_client_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if conflict.is_some() {
+        return Err(ApiError::Conflict("INSTALLATION_ALREADY_BOUND"));
+    }
+
+    sqlx::query(
+        "delete from bot_installation_bindings where bot_client_id = $1 and not (installation_id = any($2))",
+    )
+    .bind(bot_client_id)
+    .bind(&payload.installation_ids)
+    .execute(&mut *tx)
+    .await?;
+
+    for installation_id in payload.installation_ids {
+        sqlx::query(
+            r#"
+            insert into bot_installation_bindings (bot_client_id, installation_id, created_at)
+            values ($1, $2, $3)
+            on conflict (bot_client_id, installation_id) do nothing
+            "#,
+        )
+        .bind(bot_client_id)
+        .bind(installation_id)
+        .bind(Utc::now())
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_repo_config(
@@ -873,8 +1109,9 @@ async fn internal_pr_events(
     headers: HeaderMap,
     Json(payload): Json<InternalPrEventRequest>,
 ) -> ApiResult<Json<InternalPrEventResponse>> {
-    let (sig, ts) = verify_internal_request(&state, &headers, &payload.delivery_id.to_string())?;
-    store_internal_replay(&state, &sig, ts).await?;
+    let auth = verify_internal_from_headers(&state, &headers, &payload.delivery_id.to_string()).await?;
+    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
+    ensure_installation_bound(&state.pool, auth.bot_client_id, payload.installation_id).await?;
 
     tracing::info!(
         delivery_id = %payload.delivery_id,
@@ -964,9 +1201,9 @@ async fn internal_pr_events(
             insert into pr_challenges (
               id, gate_token, github_repo_id, github_repo_full_name, github_pr_number,
               github_pr_author_id, github_pr_author_login, head_sha, threshold_wei_snapshot,
-              draft_at_creation, deadline_at, status, verified_wallet_address, created_at, updated_at
+              draft_at_creation, deadline_at, status, verified_wallet_address, created_by_bot_client_id, created_at, updated_at
             )
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PENDING', null, $12, $12)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PENDING', null, $12, $13, $13)
             "#,
         )
         .bind(challenge_id)
@@ -980,6 +1217,7 @@ async fn internal_pr_events(
         .bind(config.threshold_wei)
         .bind(payload.pull_request.is_draft)
         .bind(deadline_at)
+        .bind(auth.bot_client_id)
         .bind(now)
         .execute(&state.pool)
         .await?;
@@ -1034,8 +1272,8 @@ async fn internal_deadline_check(
     headers: HeaderMap,
     Path(challenge_id): Path<Uuid>,
 ) -> ApiResult<Json<DeadlineCheckResponse>> {
-    let (sig, ts) = verify_internal_request(&state, &headers, &challenge_id.to_string())?;
-    store_internal_replay(&state, &sig, ts).await?;
+    let auth = verify_internal_from_headers(&state, &headers, &challenge_id.to_string()).await?;
+    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
 
     let challenge: Option<ChallengeRow> = sqlx::query_as(
         r#"
@@ -1051,6 +1289,13 @@ async fn internal_deadline_check(
     .await?;
 
     let challenge = challenge.ok_or(ApiError::NotFound)?;
+    let installation_id: i64 = sqlx::query_scalar(
+        "select installation_id from repo_configs where github_repo_id = $1",
+    )
+    .bind(challenge.github_repo_id)
+    .fetch_one(&state.pool)
+    .await?;
+    ensure_installation_bound(&state.pool, auth.bot_client_id, installation_id).await?;
 
     if challenge.status == "VERIFIED" || challenge.status == "EXEMPT" {
         return Ok(Json(DeadlineCheckResponse {
@@ -1133,28 +1378,40 @@ async fn internal_bot_actions_claim(
         return Err(ApiError::validation("worker_id is required"));
     }
     let nonce_message = format!("bot-actions-claim:{}", payload.worker_id);
-    let (sig, ts) = verify_internal_request(&state, &headers, &nonce_message)?;
-    store_internal_replay(&state, &sig, ts).await?;
+    let auth = verify_internal_from_headers(&state, &headers, &nonce_message).await?;
+    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
 
     let limit = payload.limit.unwrap_or(25).clamp(1, 100);
     let mut tx = state.pool.begin().await?;
     let rows: Vec<BotActionRow> = sqlx::query_as(
         r#"
-        update bot_actions
+        update bot_actions a
         set status = 'CLAIMED', claimed_at = $2, claimed_by = $3, attempts = attempts + 1, updated_at = $2
-        where id in (
-          select id from bot_actions
-          where status = 'PENDING'
+        from repo_configs r
+        where a.github_repo_id = r.github_repo_id
+          and exists (
+            select 1 from bot_installation_bindings b
+            where b.bot_client_id = $4 and b.installation_id = r.installation_id
+          )
+          and a.id in (
+          select a2.id from bot_actions a2
+          join repo_configs r2 on r2.github_repo_id = a2.github_repo_id
+          where a2.status = 'PENDING'
+            and exists (
+              select 1 from bot_installation_bindings b2
+              where b2.bot_client_id = $4 and b2.installation_id = r2.installation_id
+            )
           order by created_at asc
           limit $1
           for update skip locked
         )
-        returning id, action_type, challenge_id, github_repo_id, github_pr_number, payload
+        returning a.id, a.action_type, a.challenge_id, a.github_repo_id, a.github_pr_number, a.payload
         "#,
     )
     .bind(limit)
     .bind(Utc::now())
     .bind(payload.worker_id)
+    .bind(auth.bot_client_id)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1189,21 +1446,28 @@ async fn internal_bot_action_result(
         "bot-action-result:{}:{}:{}",
         action_id, worker_id, payload.success
     );
-    let (sig, ts) = verify_internal_request(&state, &headers, &nonce_message)?;
-    store_internal_replay(&state, &sig, ts).await?;
+    let auth = verify_internal_from_headers(&state, &headers, &nonce_message).await?;
+    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
 
     let now = Utc::now();
     let status = if payload.success {
         let updated = sqlx::query(
             r#"
-            update bot_actions
-            set status = 'DONE', completed_at = $4, failure_reason = null, updated_at = $4
-            where id = $1 and status = 'CLAIMED' and claimed_by = $2
+            update bot_actions a
+            set status = 'DONE', completed_at = $3, failure_reason = null, updated_at = $3
+            from repo_configs r
+            where a.github_repo_id = r.github_repo_id
+              and a.id = $1 and a.status = 'CLAIMED' and a.claimed_by = $2
+              and exists (
+                select 1 from bot_installation_bindings b
+                where b.bot_client_id = $4 and b.installation_id = r.installation_id
+              )
             "#,
         )
         .bind(action_id)
         .bind(&worker_id)
         .bind(now)
+        .bind(auth.bot_client_id)
         .execute(&state.pool)
         .await?;
 
@@ -1214,15 +1478,22 @@ async fn internal_bot_action_result(
     } else if payload.retryable.unwrap_or(false) {
         let updated = sqlx::query(
             r#"
-            update bot_actions
+            update bot_actions a
             set status = 'PENDING', claimed_by = null, claimed_at = null, failure_reason = $3, updated_at = $4
-            where id = $1 and status = 'CLAIMED' and claimed_by = $2
+            from repo_configs r
+            where a.github_repo_id = r.github_repo_id
+              and a.id = $1 and a.status = 'CLAIMED' and a.claimed_by = $2
+              and exists (
+                select 1 from bot_installation_bindings b
+                where b.bot_client_id = $5 and b.installation_id = r.installation_id
+              )
             "#,
         )
         .bind(action_id)
         .bind(&worker_id)
         .bind(payload.failure_reason.unwrap_or_else(|| "retry requested".to_string()))
         .bind(now)
+        .bind(auth.bot_client_id)
         .execute(&state.pool)
         .await?;
 
@@ -1233,15 +1504,22 @@ async fn internal_bot_action_result(
     } else {
         let updated = sqlx::query(
             r#"
-            update bot_actions
+            update bot_actions a
             set status = 'FAILED', completed_at = $4, failure_reason = $3, updated_at = $4
-            where id = $1 and status = 'CLAIMED' and claimed_by = $2
+            from repo_configs r
+            where a.github_repo_id = r.github_repo_id
+              and a.id = $1 and a.status = 'CLAIMED' and a.claimed_by = $2
+              and exists (
+                select 1 from bot_installation_bindings b
+                where b.bot_client_id = $5 and b.installation_id = r.installation_id
+              )
             "#,
         )
         .bind(action_id)
         .bind(&worker_id)
         .bind(payload.failure_reason.unwrap_or_else(|| "unknown failure".to_string()))
         .bind(now)
+        .bind(auth.bot_client_id)
         .execute(&state.pool)
         .await?;
 
@@ -1342,50 +1620,43 @@ async fn require_repo_owner(
     Ok(user)
 }
 
-fn verify_internal_request(
+async fn ensure_bot_client_owner(
+    state: &AppState,
+    owner_user_id: Uuid,
+    bot_client_id: Uuid,
+) -> ApiResult<()> {
+    let exists: Option<Uuid> = sqlx::query_scalar(
+        "select id from bot_clients where id = $1 and owner_user_id = $2",
+    )
+    .bind(bot_client_id)
+    .bind(owner_user_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if exists.is_some() {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+async fn verify_internal_from_headers(
     state: &AppState,
     headers: &HeaderMap,
     message: &str,
-) -> ApiResult<(String, i64)> {
-    let secret = state
-        .config
-        .internal_hmac_secret
-        .as_deref()
+) -> ApiResult<crate::services::internal_auth::InternalAuthContext> {
+    let key_id = headers
+        .get("x-stc-key-id")
+        .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Forbidden)?;
-
     let timestamp = headers
         .get("x-stc-timestamp")
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Forbidden)?;
-    let timestamp = timestamp.parse::<i64>().map_err(|_| ApiError::Forbidden)?;
-
-    if (Utc::now().timestamp() - timestamp).abs() > 300 {
-        return Err(ApiError::Forbidden);
-    }
-
     let signature_hex = headers
         .get("x-stc-signature")
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Forbidden)?;
-    let signature_hex = signature_hex
-        .strip_prefix("sha256=")
-        .unwrap_or(signature_hex)
-        .to_string();
-    let signature = hex::decode(&signature_hex).map_err(|_| ApiError::Forbidden)?;
-
-    verify_internal_signature(secret, timestamp, message, &signature)?;
-    Ok((signature_hex, timestamp))
-}
-
-fn verify_internal_signature(
-    secret: &str,
-    timestamp: i64,
-    message: &str,
-    signature: &[u8],
-) -> ApiResult<()> {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| ApiError::Forbidden)?;
-    mac.update(format!("{timestamp}.{message}").as_bytes());
-    mac.verify_slice(signature).map_err(|_| ApiError::Forbidden)
+    verify_internal_with_key_id(&state.pool, key_id, timestamp, signature_hex, message).await
 }
 
 async fn store_internal_replay(state: &AppState, signature_hex: &str, timestamp: i64) -> ApiResult<()> {
@@ -1621,15 +1892,4 @@ mod tests {
         assert_eq!(fallback, "https://app.example.com");
     }
 
-    #[test]
-    fn verifies_internal_hmac() {
-        let secret = "topsecret";
-        let timestamp = Utc::now().timestamp();
-        let message = "abc";
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac");
-        mac.update(format!("{timestamp}.{message}").as_bytes());
-        let signature = mac.finalize().into_bytes();
-        verify_internal_signature(secret, timestamp, message, signature.as_slice())
-            .expect("valid signature");
-    }
 }
