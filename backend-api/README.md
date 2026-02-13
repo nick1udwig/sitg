@@ -20,6 +20,7 @@ export APP_BASE_URL=https://app.example.com
 export API_BASE_URL=http://localhost:8080
 export GITHUB_CLIENT_ID=...
 export GITHUB_CLIENT_SECRET=...
+export GITHUB_OWNER_CHECK_TOKEN=... # token used for repo permission checks
 export INTERNAL_HMAC_SECRET=...
 export BASE_RPC_URL=https://mainnet.base.org
 export STAKING_CONTRACT_ADDRESS=0x...
@@ -32,6 +33,7 @@ export INTERNAL_HMAC_SECRET=replace_me
 2. Apply SQL migrations in order:
 - `migrations/0001_init.sql`
 - `migrations/0002_auth_wallet.sql`
+- `migrations/0003_internal_replay_and_outbox.sql`
 
 Note: service startup also runs embedded migrations automatically.
 
@@ -62,3 +64,12 @@ Signature payload format:
 Where message is:
 - `/internal/v1/pr-events`: `delivery_id`
 - `/internal/v1/challenges/{id}/deadline-check`: `challenge_id`
+- `/internal/v1/bot-actions/claim`: `bot-actions-claim:{worker_id}`
+
+Internal replay protection:
+- Signatures are single-use and persisted in `internal_request_replays`.
+
+## Background Jobs
+
+- Deadline sweeper: marks stale `PENDING` challenges and enqueues `bot_actions`.
+- Retention cleanup: deletes `audit_events` + `pr_confirmations` older than 12 months.

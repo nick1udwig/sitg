@@ -10,6 +10,7 @@ pub struct Config {
     pub api_base_url: String,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    pub github_owner_check_token: Option<String>,
     pub session_cookie_name: String,
     pub blocked_unlink_wallets: Vec<String>,
     pub internal_hmac_secret: Option<String>,
@@ -32,6 +33,7 @@ impl Config {
         let api_base_url = env::var("API_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
         let github_client_id = env::var("GITHUB_CLIENT_ID").ok();
         let github_client_secret = env::var("GITHUB_CLIENT_SECRET").ok();
+        let github_owner_check_token = env::var("GITHUB_OWNER_CHECK_TOKEN").ok();
         let session_cookie_name =
             env::var("SESSION_COOKIE_NAME").unwrap_or_else(|_| "stc_session".to_string());
         let blocked_unlink_wallets = env::var("BLOCKED_UNLINK_WALLETS")
@@ -55,6 +57,7 @@ impl Config {
             api_base_url,
             github_client_id,
             github_client_secret,
+            github_owner_check_token,
             session_cookie_name,
             blocked_unlink_wallets,
             internal_hmac_secret,

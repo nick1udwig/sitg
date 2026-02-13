@@ -27,11 +27,11 @@ use crate::{
             ConfirmTypedDataResponse, DeadlineCheckResponse, DeadlineCloseAction, GateResponse,
             InternalChallengePayload, InternalPrEventRequest, InternalPrEventResponse, MeResponse,
             RepoConfigPutRequest, RepoConfigResponse, ResolveLoginsRequest, ResolveLoginsResponse,
-            ResolvedLogin, ThresholdResponse, TypedDataDomain, TypedDataMessage,
+            ResolvedLogin, ThresholdResponse, TypedDataDomain, TypedDataMessage, BotActionClaimRequest, BotActionClaimResponse, BotActionItem,
             WalletLinkChallengeResponse, WalletLinkConfirmRequest, WalletLinkConfirmResponse,
             WhitelistPutRequest,
         },
-        db::{ChallengeRow, CurrentUserRow, RepoConfigRow, WalletLinkChallengeRow},
+        db::{BotActionRow, ChallengeRow, CurrentUserRow, RepoConfigRow, WalletLinkChallengeRow},
     },
     services::signature_service::{
         recover_eip712_pr_confirmation_address, recover_personal_sign_address, uuid_to_bytes32_hex,
@@ -75,6 +75,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/internal/v1/challenges/{challenge_id}/deadline-check",
             post(internal_deadline_check),
         )
+        .route("/internal/v1/bot-actions/claim", post(internal_bot_actions_claim))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
@@ -88,6 +89,7 @@ async fn auth_github_start(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AuthStartQuery>,
 ) -> ApiResult<Redirect> {
+    state.rate_limiter.check("auth:start:global", 100, 60)?;
     let oauth_state = build_token(32);
     let now = Utc::now();
 
@@ -113,6 +115,7 @@ async fn auth_github_callback(
     Query(query): Query<AuthCallbackQuery>,
     jar: CookieJar,
 ) -> ApiResult<(CookieJar, Redirect)> {
+    state.rate_limiter.check("auth:callback:global", 100, 60)?;
     let redirect_after: Option<String> = sqlx::query_scalar(
         "delete from oauth_states where state = $1 and expires_at > $2 returning redirect_after",
     )
@@ -150,6 +153,12 @@ async fn auth_github_callback(
     .bind(now)
     .fetch_one(&state.pool)
     .await?;
+
+    sqlx::query("update user_sessions set revoked_at = $2 where user_id = $1 and revoked_at is null")
+        .bind(current_user_id)
+        .bind(now)
+        .execute(&state.pool)
+        .await?;
 
     let session_token = build_token(64);
     sqlx::query(
@@ -214,6 +223,9 @@ async fn me(
     jar: CookieJar,
 ) -> ApiResult<Json<MeResponse>> {
     let user = require_current_user(&state, &jar).await?;
+    state
+        .rate_limiter
+        .check(&format!("wallet:challenge:{}", user.id), 20, 60)?;
     Ok(Json(MeResponse {
         id: user.id.to_string(),
         github_user_id: user.github_user_id,
@@ -230,7 +242,7 @@ async fn get_repo_config(
 
     let row: Option<RepoConfigRow> = sqlx::query_as(
         r#"
-        select github_repo_id, full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
+        select github_repo_id, full_name as _full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
                spot_price_usd, spot_source, spot_at, spot_quote_id, spot_from_cache
         from repo_configs
         where github_repo_id = $1
@@ -337,7 +349,7 @@ async fn put_repo_config(
 
     let row: RepoConfigRow = sqlx::query_as(
         r#"
-        select github_repo_id, full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
+        select github_repo_id, full_name as _full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
                spot_price_usd, spot_source, spot_at, spot_quote_id, spot_from_cache
         from repo_configs
         where github_repo_id = $1
@@ -454,7 +466,7 @@ async fn get_gate(
         r#"
         select id, gate_token, github_repo_id, github_repo_full_name, github_pr_number,
                github_pr_author_id, github_pr_author_login, head_sha, threshold_wei_snapshot,
-               draft_at_creation, deadline_at, status
+               draft_at_creation as _draft_at_creation, deadline_at, status
         from pr_challenges
         where gate_token = $1
         "#,
@@ -485,12 +497,15 @@ async fn get_gate_confirm_typed_data(
     jar: CookieJar,
 ) -> ApiResult<Json<ConfirmTypedDataResponse>> {
     let user = require_current_user(&state, &jar).await?;
+    state
+        .rate_limiter
+        .check(&format!("wallet:confirm:{}", user.id), 30, 60)?;
 
     let challenge: Option<ChallengeRow> = sqlx::query_as(
         r#"
         select id, gate_token, github_repo_id, github_repo_full_name, github_pr_number,
                github_pr_author_id, github_pr_author_login, head_sha, threshold_wei_snapshot,
-               draft_at_creation, deadline_at, status
+               draft_at_creation as _draft_at_creation, deadline_at, status
         from pr_challenges
         where gate_token = $1
         "#,
@@ -553,7 +568,7 @@ async fn post_gate_confirm(
         r#"
         select id, gate_token, github_repo_id, github_repo_full_name, github_pr_number,
                github_pr_author_id, github_pr_author_login, head_sha, threshold_wei_snapshot,
-               draft_at_creation, deadline_at, status
+               draft_at_creation as _draft_at_creation, deadline_at, status
         from pr_challenges
         where gate_token = $1
         "#,
@@ -852,7 +867,8 @@ async fn internal_pr_events(
     headers: HeaderMap,
     Json(payload): Json<InternalPrEventRequest>,
 ) -> ApiResult<Json<InternalPrEventResponse>> {
-    verify_internal_request(&state, &headers, &payload.delivery_id.to_string())?;
+    let (sig, ts) = verify_internal_request(&state, &headers, &payload.delivery_id.to_string())?;
+    store_internal_replay(&state, &sig, ts).await?;
 
     tracing::info!(
         delivery_id = %payload.delivery_id,
@@ -865,7 +881,7 @@ async fn internal_pr_events(
 
     let config: Option<RepoConfigRow> = sqlx::query_as(
         r#"
-        select github_repo_id, full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
+        select github_repo_id, full_name as _full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
                spot_price_usd, spot_source, spot_at, spot_quote_id, spot_from_cache
         from repo_configs
         where github_repo_id = $1
@@ -911,7 +927,7 @@ async fn internal_pr_events(
         r#"
         select id, gate_token, github_repo_id, github_repo_full_name, github_pr_number,
                github_pr_author_id, github_pr_author_login, head_sha, threshold_wei_snapshot,
-               draft_at_creation, deadline_at, status
+               draft_at_creation as _draft_at_creation, deadline_at, status
         from pr_challenges
         where github_repo_id = $1 and github_pr_number = $2
           and status in ('PENDING', 'VERIFIED', 'EXEMPT')
@@ -983,7 +999,7 @@ async fn internal_pr_events(
             github_pr_author_login: payload.pull_request.user.login,
             head_sha: payload.pull_request.head_sha,
             threshold_wei_snapshot: config.threshold_wei,
-            draft_at_creation: payload.pull_request.is_draft,
+            _draft_at_creation: payload.pull_request.is_draft,
             deadline_at,
             status: "PENDING".to_string(),
         }
@@ -1012,13 +1028,14 @@ async fn internal_deadline_check(
     headers: HeaderMap,
     Path(challenge_id): Path<Uuid>,
 ) -> ApiResult<Json<DeadlineCheckResponse>> {
-    verify_internal_request(&state, &headers, &challenge_id.to_string())?;
+    let (sig, ts) = verify_internal_request(&state, &headers, &challenge_id.to_string())?;
+    store_internal_replay(&state, &sig, ts).await?;
 
     let challenge: Option<ChallengeRow> = sqlx::query_as(
         r#"
         select id, gate_token, github_repo_id, github_repo_full_name, github_pr_number,
                github_pr_author_id, github_pr_author_login, head_sha, threshold_wei_snapshot,
-               draft_at_creation, deadline_at, status
+               draft_at_creation as _draft_at_creation, deadline_at, status
         from pr_challenges
         where id = $1
         "#,
@@ -1080,6 +1097,14 @@ async fn internal_deadline_check(
                 "Stake verification was not completed within 30 minutes, so this PR has been closed."
                     .to_string(),
         };
+        queue_bot_close_action(
+            &state,
+            challenge.id,
+            challenge.github_repo_id,
+            challenge.github_pr_number,
+            &close.comment_markdown,
+        )
+        .await?;
 
         return Ok(Json(DeadlineCheckResponse {
             action: "CLOSE_PR".to_string(),
@@ -1091,6 +1116,82 @@ async fn internal_deadline_check(
         action: "NOOP".to_string(),
         close: None,
     }))
+}
+
+async fn internal_bot_actions_claim(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<BotActionClaimRequest>,
+) -> ApiResult<Json<BotActionClaimResponse>> {
+    if payload.worker_id.trim().is_empty() {
+        return Err(ApiError::validation("worker_id is required"));
+    }
+    let nonce_message = format!("bot-actions-claim:{}", payload.worker_id);
+    let (sig, ts) = verify_internal_request(&state, &headers, &nonce_message)?;
+    store_internal_replay(&state, &sig, ts).await?;
+
+    let limit = payload.limit.unwrap_or(25).clamp(1, 100);
+    let mut tx = state.pool.begin().await?;
+    let rows: Vec<BotActionRow> = sqlx::query_as(
+        r#"
+        update bot_actions
+        set status = 'CLAIMED', claimed_at = $2, updated_at = $2
+        where id in (
+          select id from bot_actions
+          where status = 'PENDING'
+          order by created_at asc
+          limit $1
+          for update skip locked
+        )
+        returning id, action_type, challenge_id, github_repo_id, github_pr_number, payload
+        "#,
+    )
+    .bind(limit)
+    .bind(Utc::now())
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let actions = rows
+        .into_iter()
+        .map(|r| BotActionItem {
+            id: r.id,
+            action_type: r.action_type,
+            challenge_id: r.challenge_id,
+            github_repo_id: r.github_repo_id,
+            github_pr_number: r.github_pr_number,
+            payload: r.payload,
+        })
+        .collect();
+
+    Ok(Json(BotActionClaimResponse { actions }))
+}
+
+async fn queue_bot_close_action(
+    state: &AppState,
+    challenge_id: Uuid,
+    github_repo_id: i64,
+    github_pr_number: i32,
+    comment_markdown: &str,
+) -> ApiResult<()> {
+    sqlx::query(
+        r#"
+        insert into bot_actions (
+          id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at
+        )
+        values ($1, 'CLOSE_PR', $2, $3, $4, $5, 'PENDING', null, null, $6, $6)
+        on conflict do nothing
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(challenge_id)
+    .bind(github_repo_id)
+    .bind(github_pr_number)
+    .bind(json!({ "comment_markdown": comment_markdown }))
+    .bind(Utc::now())
+    .execute(&state.pool)
+    .await?;
+    Ok(())
 }
 
 async fn require_current_user(state: &AppState, jar: &CookieJar) -> ApiResult<CurrentUserRow> {
@@ -1126,14 +1227,27 @@ async fn require_repo_owner(
             .fetch_optional(&state.pool)
             .await?;
     let full_name = full_name.ok_or(ApiError::NotFound)?;
-    let owner = full_name.split('/').next().ok_or(ApiError::Forbidden)?;
-    if !owner.eq_ignore_ascii_case(&user.github_login) {
+    let token = state
+        .config
+        .github_owner_check_token
+        .as_deref()
+        .ok_or_else(|| ApiError::validation("GITHUB_OWNER_CHECK_TOKEN is not configured"))?;
+
+    let has_access = state
+        .github_oauth_service
+        .has_repo_write_access(token, &full_name, &user.github_login)
+        .await?;
+    if !has_access {
         return Err(ApiError::Forbidden);
     }
     Ok(user)
 }
 
-fn verify_internal_request(state: &AppState, headers: &HeaderMap, message: &str) -> ApiResult<()> {
+fn verify_internal_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    message: &str,
+) -> ApiResult<(String, i64)> {
     let secret = state
         .config
         .internal_hmac_secret
@@ -1150,16 +1264,18 @@ fn verify_internal_request(state: &AppState, headers: &HeaderMap, message: &str)
         return Err(ApiError::Forbidden);
     }
 
-    let signature_header = headers
+    let signature_hex = headers
         .get("x-stc-signature")
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Forbidden)?;
-    let signature_header = signature_header
+    let signature_hex = signature_hex
         .strip_prefix("sha256=")
-        .unwrap_or(signature_header);
-    let signature = hex::decode(signature_header).map_err(|_| ApiError::Forbidden)?;
+        .unwrap_or(signature_hex)
+        .to_string();
+    let signature = hex::decode(&signature_hex).map_err(|_| ApiError::Forbidden)?;
 
-    verify_internal_signature(secret, timestamp, message, &signature)
+    verify_internal_signature(secret, timestamp, message, &signature)?;
+    Ok((signature_hex, timestamp))
 }
 
 fn verify_internal_signature(
@@ -1171,6 +1287,27 @@ fn verify_internal_signature(
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| ApiError::Forbidden)?;
     mac.update(format!("{timestamp}.{message}").as_bytes());
     mac.verify_slice(signature).map_err(|_| ApiError::Forbidden)
+}
+
+async fn store_internal_replay(state: &AppState, signature_hex: &str, timestamp: i64) -> ApiResult<()> {
+    let inserted = sqlx::query(
+        r#"
+        insert into internal_request_replays (id, signature, timestamp_unix, created_at)
+        values ($1, $2, $3, $4)
+        on conflict (signature) do nothing
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(signature_hex)
+    .bind(timestamp)
+    .bind(Utc::now())
+    .execute(&state.pool)
+    .await?;
+
+    if inserted.rows_affected() == 0 {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(())
 }
 
 async fn insert_audit(
@@ -1208,9 +1345,24 @@ fn sanitize_redirect_url(
     allowed_prefix: &str,
     fallback: &str,
 ) -> String {
-    match candidate {
-        Some(url) if url.starts_with(allowed_prefix) => url,
-        _ => fallback.to_string(),
+    let Some(url) = candidate else {
+        return fallback.to_string();
+    };
+
+    let Ok(allowed) = reqwest::Url::parse(allowed_prefix) else {
+        return fallback.to_string();
+    };
+    let Ok(parsed) = reqwest::Url::parse(&url) else {
+        return fallback.to_string();
+    };
+
+    if parsed.scheme() == allowed.scheme()
+        && parsed.host_str() == allowed.host_str()
+        && parsed.port_or_known_default() == allowed.port_or_known_default()
+    {
+        url
+    } else {
+        fallback.to_string()
     }
 }
 
@@ -1314,7 +1466,7 @@ mod tests {
     fn maps_repo_config_response() {
         let row = RepoConfigRow {
             github_repo_id: 42,
-            full_name: "org/repo".to_string(),
+            _full_name: "org/repo".to_string(),
             draft_prs_gated: true,
             threshold_wei: Decimal::from_str_exact("100000000000000000").expect("valid decimal"),
             input_mode: "ETH".to_string(),

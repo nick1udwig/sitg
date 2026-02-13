@@ -18,6 +18,11 @@ pub struct GithubUserResponse {
     pub login: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GithubPermissionResponse {
+    permission: String,
+}
+
 impl GithubOAuthService {
     pub fn new() -> Self {
         Self {
@@ -117,5 +122,42 @@ impl GithubOAuthService {
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
         Ok(Some(payload))
+    }
+
+    pub async fn has_repo_write_access(
+        &self,
+        token: &str,
+        full_repo_name: &str,
+        login: &str,
+    ) -> ApiResult<bool> {
+        let response = self
+            .client
+            .get(format!(
+                "https://api.github.com/repos/{full_repo_name}/collaborators/{login}/permission"
+            ))
+            .bearer_auth(token)
+            .header("User-Agent", "stake-to-contribute-backend")
+            .send()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !response.status().is_success() {
+            return Err(ApiError::validation(
+                "GitHub permission lookup failed for repo owner check",
+            ));
+        }
+
+        let payload = response
+            .json::<GithubPermissionResponse>()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        Ok(matches!(
+            payload.permission.as_str(),
+            "admin" | "maintain" | "write"
+        ))
     }
 }

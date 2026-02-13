@@ -207,3 +207,24 @@ pub struct DeadlineCloseAction {
     pub github_pr_number: i32,
     pub comment_markdown: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct BotActionClaimRequest {
+    pub worker_id: String,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BotActionClaimResponse {
+    pub actions: Vec<BotActionItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BotActionItem {
+    pub id: Uuid,
+    pub action_type: String,
+    pub challenge_id: Option<Uuid>,
+    pub github_repo_id: i64,
+    pub github_pr_number: i32,
+    pub payload: serde_json::Value,
+}

@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
-use serde_json::json;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{app::AppState, error::ApiResult};
@@ -50,6 +50,13 @@ async fn process_due_challenges(state: &AppState) -> ApiResult<()> {
     .await?;
 
     for challenge_id in due {
+        let challenge_meta: Option<(i64, i32)> = sqlx::query_as(
+            "select github_repo_id, github_pr_number from pr_challenges where id = $1",
+        )
+        .bind(challenge_id)
+        .fetch_optional(&state.pool)
+        .await?;
+
         let result = sqlx::query(
             r#"
             update pr_challenges c
@@ -81,9 +88,53 @@ async fn process_due_challenges(state: &AppState) -> ApiResult<()> {
             .bind(Utc::now())
             .execute(&state.pool)
             .await?;
+
+            if let Some((github_repo_id, github_pr_number)) = challenge_meta {
+                queue_bot_action(
+                    state,
+                    challenge_id,
+                    github_repo_id,
+                    github_pr_number,
+                    "Stake verification was not completed within 30 minutes, so this PR has been closed.",
+                    json!({"source":"deadline_sweeper"}),
+                )
+                .await?;
+            }
         }
     }
 
+    Ok(())
+}
+
+async fn queue_bot_action(
+    state: &AppState,
+    challenge_id: Uuid,
+    github_repo_id: i64,
+    github_pr_number: i32,
+    comment_markdown: &str,
+    extra_payload: Value,
+) -> ApiResult<()> {
+    let payload = json!({
+      "comment_markdown": comment_markdown,
+      "extra": extra_payload
+    });
+    sqlx::query(
+        r#"
+        insert into bot_actions (
+          id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at
+        )
+        values ($1, 'CLOSE_PR', $2, $3, $4, $5, 'PENDING', null, null, $6, $6)
+        on conflict do nothing
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(challenge_id)
+    .bind(github_repo_id)
+    .bind(github_pr_number)
+    .bind(payload)
+    .bind(Utc::now())
+    .execute(&state.pool)
+    .await?;
     Ok(())
 }
 
@@ -101,10 +152,16 @@ async fn cleanup_retention(state: &AppState) -> ApiResult<()> {
         .execute(&state.pool)
         .await?
         .rows_affected();
+    let deleted_replays = sqlx::query("delete from internal_request_replays where created_at < $1")
+        .bind(Utc::now() - chrono::Duration::days(2))
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
 
     tracing::info!(
         deleted_confirmations,
         deleted_audits,
+        deleted_replays,
         cutoff = %cutoff,
         "retention cleanup completed"
     );
