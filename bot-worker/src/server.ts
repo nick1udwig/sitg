@@ -16,12 +16,52 @@ type AppContext = {
   dedupStore: DeliveryIdempotencyStore;
   scheduler: DeadlineScheduler;
   stateStore: BotStateStore;
+  metrics: MetricsStore;
+};
+
+type MetricsStore = {
+  webhookEventsTotal: number;
+  webhookIgnoredTotal: number;
+  webhookDuplicateTotal: number;
+  webhookDecisionRequireStakeTotal: number;
+  webhookDecisionExemptTotal: number;
+  webhookDecisionAlreadyVerifiedTotal: number;
+  webhookDecisionIgnoreTotal: number;
+  deadlineRunTotal: number;
+  deadlineCloseTotal: number;
+  deadlineNoopTotal: number;
+  errorsTotal: number;
 };
 
 const json = (res: ServerResponse, status: number, body: unknown): void => {
   res.statusCode = status;
   res.setHeader("content-type", "application/json");
   res.end(JSON.stringify(body));
+};
+
+const text = (res: ServerResponse, status: number, body: string): void => {
+  res.statusCode = status;
+  res.setHeader("content-type", "text/plain; version=0.0.4; charset=utf-8");
+  res.end(body);
+};
+
+const log = (
+  level: "info" | "error",
+  event: string,
+  fields: Record<string, unknown> = {},
+): void => {
+  const payload = {
+    level,
+    event,
+    ts: new Date().toISOString(),
+    ...fields,
+  };
+  const line = JSON.stringify(payload);
+  if (level === "error") {
+    console.error(line);
+  } else {
+    console.log(line);
+  }
 };
 
 const readBody = async (req: IncomingMessage): Promise<Buffer> => {
@@ -102,12 +142,15 @@ const resolveRepoFullName = async (
 };
 
 const runDeadlineForChallenge = async (ctx: AppContext, challengeId: string): Promise<void> => {
+  ctx.metrics.deadlineRunTotal += 1;
   const scheduled = ctx.scheduler.get(challengeId);
   const deadlineResponse = await ctx.backend.deadlineCheck(challengeId);
 
   if (!isCloseDecision(deadlineResponse)) {
+    ctx.metrics.deadlineNoopTotal += 1;
     ctx.scheduler.cancel(challengeId);
     ctx.stateStore.removeDeadline(challengeId);
+    log("info", "deadline.noop", { challenge_id: challengeId });
     return;
   }
 
@@ -139,18 +182,27 @@ const runDeadlineForChallenge = async (ctx: AppContext, challengeId: string): Pr
   );
   ctx.scheduler.cancel(challengeId);
   ctx.stateStore.removeDeadline(challengeId);
+  ctx.metrics.deadlineCloseTotal += 1;
+  log("info", "deadline.closed_pr", {
+    challenge_id: challengeId,
+    repo_full_name: repoFullName,
+    pr_number: close.github_pr_number,
+  });
 };
 
 const handleWebhook = async (ctx: AppContext, req: IncomingMessage, res: ServerResponse): Promise<void> => {
   const rawBody = await readBody(req);
   const event = parsePullRequestEvent(req.headers, rawBody, ctx.config.githubWebhookSecret);
+  ctx.metrics.webhookEventsTotal += 1;
   if (!event) {
+    ctx.metrics.webhookIgnoredTotal += 1;
     json(res, 202, { status: "ignored" });
     return;
   }
 
   const dedupKey = buildDeliveryDedupKey(event);
   if (ctx.dedupStore.has(dedupKey)) {
+    ctx.metrics.webhookDuplicateTotal += 1;
     json(res, 200, { status: "duplicate" });
     return;
   }
@@ -160,19 +212,31 @@ const handleWebhook = async (ctx: AppContext, req: IncomingMessage, res: ServerR
   const decision = await ctx.backend.postPrEvent(event);
   switch (decision.decision) {
     case "REQUIRE_STAKE":
+      ctx.metrics.webhookDecisionRequireStakeTotal += 1;
       await applyRequireStakeDecision(ctx, event, decision);
       break;
     case "EXEMPT":
+      ctx.metrics.webhookDecisionExemptTotal += 1;
       await applyExemptDecision(ctx, event, decision);
       break;
     case "ALREADY_VERIFIED":
+      ctx.metrics.webhookDecisionAlreadyVerifiedTotal += 1;
+      break;
     case "IGNORE":
+      ctx.metrics.webhookDecisionIgnoreTotal += 1;
       break;
     default:
       throw new Error(`Unsupported backend decision: ${String((decision as { decision: string }).decision)}`);
   }
 
   ctx.dedupStore.add(dedupKey);
+  log("info", "webhook.decision_applied", {
+    delivery_id: event.delivery_id,
+    action: event.action,
+    repo_full_name: event.repository.full_name,
+    pr_number: event.pull_request.number,
+    decision: decision.decision,
+  });
   json(res, 200, { status: "ok", decision: decision.decision });
 };
 
@@ -212,6 +276,19 @@ export const createAppServer = (config: AppConfig) => {
     privateKeyPem: config.githubAppPrivateKey,
   });
   const stateStore = new BotStateStore(config.stateFilePath);
+  const metrics: MetricsStore = {
+    webhookEventsTotal: 0,
+    webhookIgnoredTotal: 0,
+    webhookDuplicateTotal: 0,
+    webhookDecisionRequireStakeTotal: 0,
+    webhookDecisionExemptTotal: 0,
+    webhookDecisionAlreadyVerifiedTotal: 0,
+    webhookDecisionIgnoreTotal: 0,
+    deadlineRunTotal: 0,
+    deadlineCloseTotal: 0,
+    deadlineNoopTotal: 0,
+    errorsTotal: 0,
+  };
   let appCtx: AppContext;
 
   const scheduler = new DeadlineScheduler(async (challengeId: string) => {
@@ -225,11 +302,20 @@ export const createAppServer = (config: AppConfig) => {
     dedupStore: new DeliveryIdempotencyStore(24 * 60 * 60 * 1000, stateStore),
     scheduler,
     stateStore,
+    metrics,
   };
 
   for (const pending of stateStore.getPendingDeadlines()) {
     scheduler.ensure(pending);
   }
+  if (stateStore.getPendingDeadlines().length > 0) {
+    log("info", "startup.deadlines_rescheduled", { count: stateStore.getPendingDeadlines().length });
+  }
+  log("info", "startup.state_store", {
+    mode: "file",
+    path: config.stateFilePath,
+    single_instance_only: true,
+  });
 
   const server = createServer(async (req, res) => {
     try {
@@ -247,9 +333,46 @@ export const createAppServer = (config: AppConfig) => {
         json(res, 200, { status: "ok" });
         return;
       }
+      if (method === "GET" && url.pathname === "/metrics") {
+        text(
+          res,
+          200,
+          [
+            "# TYPE stc_bot_webhook_events_total counter",
+            `stc_bot_webhook_events_total ${appCtx.metrics.webhookEventsTotal}`,
+            "# TYPE stc_bot_webhook_ignored_total counter",
+            `stc_bot_webhook_ignored_total ${appCtx.metrics.webhookIgnoredTotal}`,
+            "# TYPE stc_bot_webhook_duplicate_total counter",
+            `stc_bot_webhook_duplicate_total ${appCtx.metrics.webhookDuplicateTotal}`,
+            "# TYPE stc_bot_webhook_decision_require_stake_total counter",
+            `stc_bot_webhook_decision_require_stake_total ${appCtx.metrics.webhookDecisionRequireStakeTotal}`,
+            "# TYPE stc_bot_webhook_decision_exempt_total counter",
+            `stc_bot_webhook_decision_exempt_total ${appCtx.metrics.webhookDecisionExemptTotal}`,
+            "# TYPE stc_bot_webhook_decision_already_verified_total counter",
+            `stc_bot_webhook_decision_already_verified_total ${appCtx.metrics.webhookDecisionAlreadyVerifiedTotal}`,
+            "# TYPE stc_bot_webhook_decision_ignore_total counter",
+            `stc_bot_webhook_decision_ignore_total ${appCtx.metrics.webhookDecisionIgnoreTotal}`,
+            "# TYPE stc_bot_deadline_run_total counter",
+            `stc_bot_deadline_run_total ${appCtx.metrics.deadlineRunTotal}`,
+            "# TYPE stc_bot_deadline_close_total counter",
+            `stc_bot_deadline_close_total ${appCtx.metrics.deadlineCloseTotal}`,
+            "# TYPE stc_bot_deadline_noop_total counter",
+            `stc_bot_deadline_noop_total ${appCtx.metrics.deadlineNoopTotal}`,
+            "# TYPE stc_bot_errors_total counter",
+            `stc_bot_errors_total ${appCtx.metrics.errorsTotal}`,
+            "",
+          ].join("\n"),
+        );
+        return;
+      }
       json(res, 404, { error: "not_found" });
     } catch (error) {
-      console.error(error);
+      appCtx.metrics.errorsTotal += 1;
+      log("error", "request.failed", {
+        method: req.method,
+        url: req.url,
+        error: error instanceof Error ? error.message : String(error),
+      });
       json(res, 500, { error: "internal_error" });
     }
   });

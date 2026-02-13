@@ -13,6 +13,8 @@ TypeScript GitHub App worker for Stake-to-Contribute.
   - Runs backend deadline check (`POST /internal/v1/challenges/{challenge_id}/deadline-check`).
   - If backend returns `action: CLOSE_PR`, closes PR and posts timeout comment.
 - `GET /healthz`
+- `GET /metrics`:
+  - Prometheus-style counters for webhook/deadline/error paths.
 
 ## Runtime state
 
@@ -23,6 +25,8 @@ Bot state is persisted to `BOT_STATE_FILE`:
 - repository installation mapping (`repo_id -> installation_id/full_name`).
 
 This allows restart-safe dedup and deadline recovery.
+
+Note: file-based state is single-instance only. For horizontal scaling, move state to a shared store.
 
 ## Setup
 
@@ -39,3 +43,7 @@ This allows restart-safe dedup and deadline recovery.
 ## Test
 
 - `npm test`
+
+## Operations
+
+- See `bot-worker/OPERATIONS.md` for alerting, retry/idempotency behavior, and key rotation steps.
