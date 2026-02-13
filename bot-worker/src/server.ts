@@ -6,7 +6,7 @@ import { DeadlineScheduler } from "./deadlines.js";
 import { GitHubClient } from "./github.js";
 import { DeliveryIdempotencyStore } from "./idempotency.js";
 import { BotStateStore } from "./persistence.js";
-import type { DeadlineCheckResponse, NormalizedPrEvent, PrEventDecisionResponse } from "./types.js";
+import type { BotAction, DeadlineCheckResponse, NormalizedPrEvent, PrEventDecisionResponse } from "./types.js";
 import { buildDeliveryDedupKey, parsePullRequestEvent } from "./webhook.js";
 
 type AppContext = {
@@ -30,6 +30,10 @@ type MetricsStore = {
   deadlineRunTotal: number;
   deadlineCloseTotal: number;
   deadlineNoopTotal: number;
+  outboxClaimTotal: number;
+  outboxActionsClaimedTotal: number;
+  outboxActionsSuccessTotal: number;
+  outboxActionsFailedTotal: number;
   errorsTotal: number;
 };
 
@@ -43,6 +47,14 @@ const text = (res: ServerResponse, status: number, body: string): void => {
   res.statusCode = status;
   res.setHeader("content-type", "text/plain; version=0.0.4; charset=utf-8");
   res.end(body);
+};
+
+const readBody = async (req: IncomingMessage): Promise<Buffer> => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 };
 
 const log = (
@@ -62,14 +74,6 @@ const log = (
   } else {
     console.log(line);
   }
-};
-
-const readBody = async (req: IncomingMessage): Promise<Buffer> => {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
 };
 
 const timeoutFallbackComment = (): string =>
@@ -92,6 +96,10 @@ const applyRequireStakeDecision = async (
     challenge.id,
     challenge.comment_markdown,
   );
+
+  if (!ctx.config.enableLocalDeadlineTimers) {
+    return;
+  }
 
   const scheduled = {
     challengeId: challenge.id,
@@ -141,6 +149,31 @@ const resolveRepoFullName = async (
   return fullName;
 };
 
+const executeClosePr = async (
+  ctx: AppContext,
+  installationId: number,
+  repoId: number,
+  prNumber: number,
+  challengeId: string,
+  commentMarkdown: string,
+): Promise<void> => {
+  const remembered = ctx.stateStore.getRepoInstallation(repoId);
+  const repoFullName = await resolveRepoFullName(ctx, installationId, repoId, remembered?.fullName);
+  await ctx.github.closePullRequest(installationId, repoFullName, prNumber);
+  await ctx.github.upsertTimeoutComment(installationId, repoFullName, prNumber, challengeId, commentMarkdown);
+};
+
+const resolveInstallationIdForRepo = (ctx: AppContext, repoId: number): number | null => {
+  const remembered = ctx.stateStore.getRepoInstallation(repoId)?.installationId;
+  if (remembered) {
+    return remembered;
+  }
+  if (ctx.config.defaultInstallationId) {
+    return ctx.config.defaultInstallationId;
+  }
+  return null;
+};
+
 const runDeadlineForChallenge = async (ctx: AppContext, challengeId: string): Promise<void> => {
   ctx.metrics.deadlineRunTotal += 1;
   const scheduled = ctx.scheduler.get(challengeId);
@@ -160,40 +193,101 @@ const runDeadlineForChallenge = async (ctx: AppContext, challengeId: string): Pr
   }
 
   const remembered = ctx.stateStore.getRepoInstallation(close.github_repo_id);
-  const installationId = scheduled?.installationId ?? remembered?.installationId;
+  const installationId = scheduled?.installationId ?? remembered?.installationId ?? ctx.config.defaultInstallationId;
   if (!installationId) {
     throw new Error(`Missing installation mapping for repo ${close.github_repo_id}; cannot close PR`);
   }
 
-  const repoFullName = await resolveRepoFullName(
+  await executeClosePr(
     ctx,
     installationId,
     close.github_repo_id,
-    scheduled?.repoFullName ?? remembered?.fullName,
-  );
-
-  await ctx.github.closePullRequest(installationId, repoFullName, close.github_pr_number);
-  await ctx.github.upsertTimeoutComment(
-    installationId,
-    repoFullName,
     close.github_pr_number,
     challengeId,
     close.comment_markdown ?? timeoutFallbackComment(),
   );
+
   ctx.scheduler.cancel(challengeId);
   ctx.stateStore.removeDeadline(challengeId);
   ctx.metrics.deadlineCloseTotal += 1;
   log("info", "deadline.closed_pr", {
     challenge_id: challengeId,
-    repo_full_name: repoFullName,
+    repo_id: close.github_repo_id,
     pr_number: close.github_pr_number,
   });
+};
+
+const executeOutboxAction = async (ctx: AppContext, action: BotAction): Promise<void> => {
+  if (action.action_type !== "CLOSE_PR") {
+    throw new Error(`Unsupported bot action type: ${action.action_type}`);
+  }
+
+  const installationId = resolveInstallationIdForRepo(ctx, action.github_repo_id);
+  if (!installationId) {
+    throw new Error(
+      `Missing installation mapping for repo ${action.github_repo_id}; set DEFAULT_INSTALLATION_ID or process webhook for this repo first`,
+    );
+  }
+
+  await executeClosePr(
+    ctx,
+    installationId,
+    action.github_repo_id,
+    action.github_pr_number,
+    action.challenge_id,
+    action.payload?.comment_markdown ?? timeoutFallbackComment(),
+  );
+};
+
+const runOutboxPollTick = async (ctx: AppContext): Promise<void> => {
+  ctx.metrics.outboxClaimTotal += 1;
+  const claimed = await ctx.backend.claimBotActions(ctx.config.workerId, ctx.config.outboxClaimLimit);
+  const actions = claimed.actions ?? [];
+  ctx.metrics.outboxActionsClaimedTotal += actions.length;
+
+  if (actions.length > 0) {
+    log("info", "outbox.claimed", {
+      worker_id: ctx.config.workerId,
+      count: actions.length,
+    });
+  }
+
+  for (const action of actions) {
+    try {
+      await executeOutboxAction(ctx, action);
+      await ctx.backend.postBotActionResult(action.id, ctx.config.workerId, true, null, null);
+      ctx.metrics.outboxActionsSuccessTotal += 1;
+      log("info", "outbox.action_succeeded", {
+        action_id: action.id,
+        action_type: action.action_type,
+        challenge_id: action.challenge_id,
+      });
+    } catch (error) {
+      ctx.metrics.outboxActionsFailedTotal += 1;
+      const reason = error instanceof Error ? error.message : String(error);
+      log("error", "outbox.action_failed", {
+        action_id: action.id,
+        action_type: action.action_type,
+        error: reason,
+      });
+      try {
+        await ctx.backend.postBotActionResult(action.id, ctx.config.workerId, false, reason, true);
+      } catch (ackError) {
+        ctx.metrics.errorsTotal += 1;
+        log("error", "outbox.ack_failed", {
+          action_id: action.id,
+          error: ackError instanceof Error ? ackError.message : String(ackError),
+        });
+      }
+    }
+  }
 };
 
 const handleWebhook = async (ctx: AppContext, req: IncomingMessage, res: ServerResponse): Promise<void> => {
   const rawBody = await readBody(req);
   const event = parsePullRequestEvent(req.headers, rawBody, ctx.config.githubWebhookSecret);
   ctx.metrics.webhookEventsTotal += 1;
+
   if (!event) {
     ctx.metrics.webhookIgnoredTotal += 1;
     json(res, 202, { status: "ignored" });
@@ -269,6 +363,7 @@ export const createAppServer = (config: AppConfig) => {
   const backend = new BackendClient({
     baseUrl: config.backendBaseUrl,
     serviceToken: config.backendServiceToken,
+    botKeyId: config.backendBotKeyId,
     internalHmacSecret: config.backendInternalHmacSecret,
   });
   const github = new GitHubClient({
@@ -287,6 +382,10 @@ export const createAppServer = (config: AppConfig) => {
     deadlineRunTotal: 0,
     deadlineCloseTotal: 0,
     deadlineNoopTotal: 0,
+    outboxClaimTotal: 0,
+    outboxActionsClaimedTotal: 0,
+    outboxActionsSuccessTotal: 0,
+    outboxActionsFailedTotal: 0,
     errorsTotal: 0,
   };
   let appCtx: AppContext;
@@ -305,17 +404,57 @@ export const createAppServer = (config: AppConfig) => {
     metrics,
   };
 
-  for (const pending of stateStore.getPendingDeadlines()) {
-    scheduler.ensure(pending);
+  const pendingDeadlines = stateStore.getPendingDeadlines();
+  if (config.enableLocalDeadlineTimers) {
+    for (const pending of pendingDeadlines) {
+      scheduler.ensure(pending);
+    }
   }
-  if (stateStore.getPendingDeadlines().length > 0) {
-    log("info", "startup.deadlines_rescheduled", { count: stateStore.getPendingDeadlines().length });
+  if (pendingDeadlines.length > 0) {
+    log("info", "startup.deadlines_loaded", {
+      count: pendingDeadlines.length,
+      local_timers_enabled: config.enableLocalDeadlineTimers,
+    });
   }
   log("info", "startup.state_store", {
     mode: "file",
     path: config.stateFilePath,
     single_instance_only: true,
   });
+
+  if (config.outboxPollingEnabled) {
+    let running = false;
+    const tick = async (): Promise<void> => {
+      if (running) {
+        return;
+      }
+      running = true;
+      try {
+        await runOutboxPollTick(appCtx);
+      } catch (error) {
+        appCtx.metrics.errorsTotal += 1;
+        log("error", "outbox.poll_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        running = false;
+      }
+    };
+
+    void tick();
+    const interval = setInterval(() => {
+      void tick();
+    }, config.outboxPollIntervalMs);
+    interval.unref?.();
+
+    log("info", "startup.outbox_polling_enabled", {
+      worker_id: config.workerId,
+      interval_ms: config.outboxPollIntervalMs,
+      claim_limit: config.outboxClaimLimit,
+    });
+  } else {
+    log("info", "startup.outbox_polling_disabled");
+  }
 
   const server = createServer(async (req, res) => {
     try {
@@ -358,6 +497,14 @@ export const createAppServer = (config: AppConfig) => {
             `stc_bot_deadline_close_total ${appCtx.metrics.deadlineCloseTotal}`,
             "# TYPE stc_bot_deadline_noop_total counter",
             `stc_bot_deadline_noop_total ${appCtx.metrics.deadlineNoopTotal}`,
+            "# TYPE stc_bot_outbox_claim_total counter",
+            `stc_bot_outbox_claim_total ${appCtx.metrics.outboxClaimTotal}`,
+            "# TYPE stc_bot_outbox_actions_claimed_total counter",
+            `stc_bot_outbox_actions_claimed_total ${appCtx.metrics.outboxActionsClaimedTotal}`,
+            "# TYPE stc_bot_outbox_actions_success_total counter",
+            `stc_bot_outbox_actions_success_total ${appCtx.metrics.outboxActionsSuccessTotal}`,
+            "# TYPE stc_bot_outbox_actions_failed_total counter",
+            `stc_bot_outbox_actions_failed_total ${appCtx.metrics.outboxActionsFailedTotal}`,
             "# TYPE stc_bot_errors_total counter",
             `stc_bot_errors_total ${appCtx.metrics.errorsTotal}`,
             "",

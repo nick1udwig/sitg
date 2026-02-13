@@ -50,3 +50,27 @@ export type ScheduledDeadline = {
   prNumber: number;
   deadlineAt: string;
 };
+
+export type BotActionType = "CLOSE_PR";
+
+export type BotAction = {
+  id: string;
+  action_type: BotActionType;
+  challenge_id: string;
+  github_repo_id: number;
+  github_pr_number: number;
+  payload: {
+    comment_markdown?: string;
+  };
+};
+
+export type BotActionsClaimResponse = {
+  actions: BotAction[];
+};
+
+export type BotActionResultStatus = "DONE" | "PENDING" | "FAILED";
+
+export type BotActionResultResponse = {
+  id: string;
+  status: BotActionResultStatus;
+};

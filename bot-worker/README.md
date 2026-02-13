@@ -12,9 +12,15 @@ TypeScript GitHub App worker for Stake-to-Contribute.
 - `POST /internal/v1/deadlines/{challenge_id}/run`:
   - Runs backend deadline check (`POST /internal/v1/challenges/{challenge_id}/deadline-check`).
   - If backend returns `action: CLOSE_PR`, closes PR and posts timeout comment.
+  - Intended as optional/manual fallback.
 - `GET /healthz`
 - `GET /metrics`:
   - Prometheus-style counters for webhook/deadline/error paths.
+
+Primary deadline mode:
+
+- Bot polls backend outbox via `POST /internal/v1/bot-actions/claim`.
+- For each `CLOSE_PR`, bot executes GitHub close/comment and acks via `POST /internal/v1/bot-actions/{action_id}/result`.
 
 ## Runtime state
 
@@ -31,8 +37,12 @@ Note: file-based state is single-instance only. For horizontal scaling, move sta
 ## Setup
 
 1. Copy `.env.example` to your environment.
-   - Set `BACKEND_INTERNAL_HMAC_SECRET` to backend `INTERNAL_HMAC_SECRET`.
+   - Set `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_HMAC_SECRET` from bot key provisioning in SaaS.
+   - Backend internal auth uses `x-stc-key-id`, `x-stc-timestamp`, and `x-stc-signature`.
    - `BACKEND_SERVICE_TOKEN` is optional and only used if your backend also accepts bearer auth.
+   - Set `WORKER_ID` to a stable identifier per running worker instance.
+   - Keep `OUTBOX_POLLING_ENABLED=true` for normal operation.
+   - `ENABLE_LOCAL_DEADLINE_TIMERS` should usually remain `false`.
 2. Install dependencies:
    - `npm install`
 3. Build:

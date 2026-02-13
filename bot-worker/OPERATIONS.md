@@ -15,6 +15,10 @@ Key counters:
 - `stc_bot_deadline_run_total`
 - `stc_bot_deadline_close_total`
 - `stc_bot_deadline_noop_total`
+- `stc_bot_outbox_claim_total`
+- `stc_bot_outbox_actions_claimed_total`
+- `stc_bot_outbox_actions_success_total`
+- `stc_bot_outbox_actions_failed_total`
 - `stc_bot_errors_total`
 
 Suggested alerts:
@@ -30,14 +34,24 @@ Suggested alerts:
 - Backend and GitHub HTTP calls use exponential backoff retries
 - Comment posting is marker-based upsert, safe on retries
 - Close PR operation is safe if PR is already closed
+- Outbox claim/ack requests are retried with fresh signatures on each request
 
 ## Failure handling
 
 - If deadline action resolves to `NOOP`, local deadline state is removed
-- If close action fails, request returns `500`; retry the internal deadline run endpoint:
+- Primary path:
+  - bot polls `/internal/v1/bot-actions/claim`
+  - executes actions
+  - posts ack to `/internal/v1/bot-actions/{action_id}/result`
+- If outbox action fails in bot:
+  - bot sends failure ack with `retryable=true`
+  - backend can requeue according to policy
+- Manual fallback:
   - `POST /internal/v1/deadlines/{challenge_id}/run`
   - include `x-internal-token` when configured
-- On process restart, persisted deadlines are rescheduled automatically
+- On process restart:
+  - outbox polling resumes automatically
+  - optional local timers are rescheduled only if `ENABLE_LOCAL_DEADLINE_TIMERS=true`
 
 ## Secret rotation
 
@@ -53,6 +67,13 @@ Rotate `INTERNAL_HMAC_SECRET` / `BACKEND_INTERNAL_HMAC_SECRET`:
 2. Deploy bot with updated `BACKEND_INTERNAL_HMAC_SECRET`.
 3. Confirm internal calls succeed (`/internal/v1/pr-events`, `/deadline-check`).
 4. Remove old secret from backend acceptance path.
+
+Rotate bot key id/secret pair:
+
+1. Create a new key for the bot client in SaaS (`key_id` + secret shown once).
+2. Deploy bot with new `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_HMAC_SECRET`.
+3. Confirm internal calls succeed (`/internal/v1/pr-events`, `/bot-actions/claim`, `/result`).
+4. Revoke old key in SaaS.
 
 Rotate GitHub App private key:
 
