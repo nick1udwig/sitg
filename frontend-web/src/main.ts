@@ -14,7 +14,18 @@ import {
   unlinkWallet
 } from './api';
 import { formatCountdown, gateFailureMessage, parseGateToken } from './gate-logic';
-import type { GateViewResponse, MeResponse, RepoConfigResponse, WhitelistEntry } from './types';
+import {
+  addErrorNotice,
+  addInfoNotice,
+  clearNotices,
+  dismissNotice,
+  getState,
+  isBusy,
+  setMe,
+  withBusyAction
+} from './state';
+import { signMessageWithInjectedWallet, signTypedDataWithInjectedWallet } from './wallet';
+import type { GateViewResponse, RepoConfigResponse } from './types';
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
@@ -22,7 +33,6 @@ if (!app) {
 }
 const appRoot = app;
 
-let me: MeResponse | null = null;
 let timerId: number | null = null;
 
 function pathName(): string {
@@ -37,6 +47,31 @@ function setContent(content: string): void {
   appRoot.innerHTML = content;
 }
 
+function noticesMarkup(): string {
+  const notices = getState().notices;
+  if (!notices.length) {
+    return '';
+  }
+
+  return `
+    <section class="grid" id="notice-stack">
+      ${notices
+        .map(
+          (notice, index) => `
+            <article class="card notice-toast notice-${notice.kind}">
+              <div>
+                <p class="meta">${notice.kind.toUpperCase()}</p>
+                <p>${notice.message}</p>
+              </div>
+              <button class="ghost" data-dismiss-notice="${index}">Dismiss</button>
+            </article>
+          `
+        )
+        .join('')}
+    </section>
+  `;
+}
+
 function shell(content: string): string {
   const path = pathName();
   return `
@@ -47,6 +82,7 @@ function shell(content: string): string {
         <a class="${path.startsWith('/wallet') ? 'active' : ''}" href="/wallet">Wallet</a>
       </nav>
     </header>
+    ${noticesMarkup()}
     ${content}
   `;
 }
@@ -65,11 +101,23 @@ function withDesktopGuard(content: string): string {
   `;
 }
 
-function bindNavRouting(): void {
+function bindSharedControls(): void {
   document.querySelectorAll<HTMLAnchorElement>('a[href^="/"]').forEach((anchor) => {
     anchor.addEventListener('click', (event) => {
       event.preventDefault();
       navigate(anchor.getAttribute('href') || '/');
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('[data-dismiss-notice]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const indexValue = button.getAttribute('data-dismiss-notice');
+      if (!indexValue) {
+        return;
+      }
+
+      dismissNotice(Number(indexValue));
+      void render();
     });
   });
 }
@@ -83,15 +131,34 @@ window.addEventListener('popstate', () => {
   void render();
 });
 
+window.addEventListener('error', (event) => {
+  addErrorNotice(event.error instanceof Error ? event.error.message : 'Unexpected runtime error.');
+  void render();
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason;
+  addErrorNotice(reason instanceof Error ? reason.message : 'Unhandled async error.');
+  void render();
+});
+
+async function refreshMe(): Promise<void> {
+  setMe(await getMe());
+}
+
+function renderPage(content: string): void {
+  setContent(withDesktopGuard(content));
+  bindSharedControls();
+}
+
 async function renderOwnerSetup(): Promise<void> {
   const repoId = '1';
   let config: RepoConfigResponse | null = null;
-  let loadError: string | null = null;
 
   try {
     config = await getRepoConfig(repoId);
   } catch (error) {
-    loadError = error instanceof Error ? error.message : 'Failed to load repo config';
+    addErrorNotice(error instanceof Error ? error.message : 'Failed to load repo config');
   }
 
   const inputMode = config?.threshold.input_mode ?? 'ETH';
@@ -100,69 +167,63 @@ async function renderOwnerSetup(): Promise<void> {
   const enforcedEth = config?.threshold.eth ?? '0.10';
   const usdEstimate = config?.threshold.usd_estimate ?? '0.00';
 
-  setContent(
-    withDesktopGuard(`
-      <section class="grid two">
-        <article class="card">
-          <h2>Repository Setup</h2>
-          <p class="meta">Configure threshold and draft PR gating for this repository.</p>
-          ${loadError ? `<p class="error">${loadError}</p>` : ''}
-          <div class="notice">
-            <p><strong>Enforcement is in ETH.</strong></p>
-            <p>USD value is an estimate using spot price at configuration time.</p>
-          </div>
-          <form id="repo-config-form">
-            <label>
-              Repo ID
-              <input type="text" name="repo_id" value="${repoId}" disabled />
-            </label>
-            <label>
-              Input mode
-              <select name="input_mode">
-                <option value="ETH" ${inputMode === 'ETH' ? 'selected' : ''}>ETH</option>
-                <option value="USD" ${inputMode === 'USD' ? 'selected' : ''}>USD</option>
-              </select>
-            </label>
-            <label>
-              Input value
-              <input name="input_value" value="${inputValue}" required />
-            </label>
-            <label>
-              <span>Draft PRs gated</span>
-              <select name="draft_prs_gated">
-                <option value="true" ${draftPrsGated ? 'selected' : ''}>On (default)</option>
-                <option value="false" ${!draftPrsGated ? 'selected' : ''}>Off</option>
-              </select>
-            </label>
-            <button type="submit">Save config</button>
-          </form>
-        </article>
+  renderPage(`
+    <section class="grid two">
+      <article class="card">
+        <h2>Repository Setup</h2>
+        <p class="meta">Configure threshold and draft PR gating for this repository.</p>
+        <div class="notice">
+          <p><strong>Enforcement is in ETH.</strong></p>
+          <p>USD value is an estimate using spot price at configuration time.</p>
+        </div>
+        <form id="repo-config-form">
+          <label>
+            Repo ID
+            <input type="text" name="repo_id" value="${repoId}" disabled />
+          </label>
+          <label>
+            Input mode
+            <select name="input_mode">
+              <option value="ETH" ${inputMode === 'ETH' ? 'selected' : ''}>ETH</option>
+              <option value="USD" ${inputMode === 'USD' ? 'selected' : ''}>USD</option>
+            </select>
+          </label>
+          <label>
+            Input value
+            <input name="input_value" value="${inputValue}" required />
+          </label>
+          <label>
+            <span>Draft PRs gated</span>
+            <select name="draft_prs_gated">
+              <option value="true" ${draftPrsGated ? 'selected' : ''}>On (default)</option>
+              <option value="false" ${!draftPrsGated ? 'selected' : ''}>Off</option>
+            </select>
+          </label>
+          <button type="submit" ${isBusy('save-config') ? 'disabled' : ''}>${isBusy('save-config') ? 'Saving...' : 'Save config'}</button>
+        </form>
+      </article>
 
-        <article class="card">
-          <h3>Current enforcement snapshot</h3>
-          <dl class="kv">
-            <dt>Enforced ETH</dt><dd>${enforcedEth}</dd>
-            <dt>USD estimate</dt><dd>${usdEstimate}</dd>
-            <dt>Input mode</dt><dd>${inputMode}</dd>
-            <dt>Draft PRs</dt><dd>${draftPrsGated ? 'Gated' : 'Not gated'}</dd>
-          </dl>
+      <article class="card">
+        <h3>Current enforcement snapshot</h3>
+        <dl class="kv">
+          <dt>Enforced ETH</dt><dd>${enforcedEth}</dd>
+          <dt>USD estimate</dt><dd>${usdEstimate}</dd>
+          <dt>Input mode</dt><dd>${inputMode}</dd>
+          <dt>Draft PRs</dt><dd>${draftPrsGated ? 'Gated' : 'Not gated'}</dd>
+        </dl>
 
-          <h3>Whitelist management</h3>
-          <p class="meta">Enter GitHub logins, resolve to user IDs, and save.</p>
-          <form id="whitelist-form">
-            <label>
-              GitHub logins (comma separated)
-              <textarea name="logins" placeholder="alice, bob"></textarea>
-            </label>
-            <button type="submit">Resolve and save whitelist</button>
-          </form>
-          <p id="whitelist-feedback" class="meta"></p>
-        </article>
-      </section>
-    `)
-  );
-
-  bindNavRouting();
+        <h3>Whitelist management</h3>
+        <p class="meta">Enter GitHub logins, resolve to user IDs, and save.</p>
+        <form id="whitelist-form">
+          <label>
+            GitHub logins (comma separated)
+            <textarea name="logins" placeholder="alice, bob"></textarea>
+          </label>
+          <button type="submit" ${isBusy('save-whitelist') ? 'disabled' : ''}>${isBusy('save-whitelist') ? 'Saving...' : 'Resolve and save whitelist'}</button>
+        </form>
+      </article>
+    </section>
+  `);
 
   const repoConfigForm = document.querySelector<HTMLFormElement>('#repo-config-form');
   repoConfigForm?.addEventListener('submit', async (event) => {
@@ -172,17 +233,21 @@ async function renderOwnerSetup(): Promise<void> {
     const input_value = String(formData.get('input_value') || '');
     const draft_prs_gated = String(formData.get('draft_prs_gated')) === 'true';
 
-    try {
-      const saved = await putRepoConfig(repoId, { input_mode, input_value, draft_prs_gated });
-      alert(`Saved. Enforced ETH: ${saved.threshold.eth}`);
-      void renderOwnerSetup();
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'Save failed');
+    const result = await withBusyAction(
+      'save-config',
+      () => putRepoConfig(repoId, { input_mode, input_value, draft_prs_gated }),
+      { successMessage: 'Repository configuration saved.' }
+    );
+
+    if (result) {
+      await renderOwnerSetup();
+      return;
     }
+
+    void render();
   });
 
   const whitelistForm = document.querySelector<HTMLFormElement>('#whitelist-form');
-  const whitelistFeedback = document.querySelector<HTMLElement>('#whitelist-feedback');
   whitelistForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const formData = new FormData(whitelistForm);
@@ -193,17 +258,36 @@ async function renderOwnerSetup(): Promise<void> {
       .filter(Boolean);
 
     if (!logins.length) {
-      whitelistFeedback!.textContent = 'Provide at least one login.';
+      addInfoNotice('Provide at least one GitHub login before saving whitelist.');
+      void render();
       return;
     }
 
-    try {
-      const resolvedResponse = await resolveWhitelistLogins(repoId, logins);
-      await putWhitelist(repoId, resolvedResponse.resolved);
-      whitelistFeedback!.textContent = `Saved ${resolvedResponse.resolved.length} login(s). Unresolved: ${resolvedResponse.unresolved.join(', ') || 'none'}.`;
-    } catch (error) {
-      whitelistFeedback!.textContent = error instanceof Error ? error.message : 'Whitelist save failed';
+    const resolved = await withBusyAction('save-whitelist', () => resolveWhitelistLogins(repoId, logins));
+    if (!resolved) {
+      void render();
+      return;
     }
+
+    const saved = await withBusyAction(
+      'save-whitelist',
+      async () => {
+        await putWhitelist(repoId, resolved.resolved);
+        return resolved;
+      },
+      {
+        successMessage: `Saved ${resolved.resolved.length} whitelist login(s). Unresolved: ${
+          resolved.unresolved.join(', ') || 'none'
+        }.`
+      }
+    );
+
+    if (saved) {
+      await renderOwnerSetup();
+      return;
+    }
+
+    void render();
   });
 }
 
@@ -220,9 +304,16 @@ function gateStatusBadge(gate: GateViewResponse): string {
 }
 
 function gateFailureState(gate: GateViewResponse): string {
-  const message = gateFailureMessage(gate, me);
+  const message = gateFailureMessage(gate, getState().me);
   if (message) {
-    return `<p class="${gate.status === 'EXPIRED' || message.includes('Wrong') || message.includes('No linked') || message.includes('Insufficient') ? 'error' : 'meta'}">${message}</p>`;
+    return `<p class="${
+      gate.status === 'EXPIRED' ||
+      message.includes('Wrong') ||
+      message.includes('No linked') ||
+      message.includes('Insufficient')
+        ? 'error'
+        : 'meta'
+    }">${message}</p>`;
   }
 
   return '<p class="success">Ready to sign PR confirmation.</p>';
@@ -230,59 +321,65 @@ function gateFailureState(gate: GateViewResponse): string {
 
 async function renderGatePage(gateToken: string): Promise<void> {
   let gate: GateViewResponse | null = null;
-  let error: string | null = null;
 
   try {
     gate = await getGate(gateToken);
   } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to load gate';
+    addErrorNotice(e instanceof Error ? e.message : 'Failed to load gate');
   }
 
   if (!gate) {
-    setContent(
-      withDesktopGuard(`
-        <section class="card">
-          <h2>Contributor Gate</h2>
-          <p class="error">${error ?? 'Gate unavailable'}</p>
-        </section>
-      `)
-    );
-    bindNavRouting();
+    renderPage(`
+      <section class="card">
+        <h2>Contributor Gate</h2>
+        <p class="error">Gate unavailable.</p>
+      </section>
+    `);
     return;
   }
 
-  setContent(
-    withDesktopGuard(`
-      <section class="grid two">
-        <article class="card">
-          <h2>PR Stake Gate ${gateStatusBadge(gate)}</h2>
-          <p class="meta">${gate.repo_full_name} · PR #${gate.pull_request_number}</p>
-          <p class="countdown" id="countdown">${formatCountdown(gate.deadline_at)}</p>
-          <p><a href="${gate.pull_request_url}" target="_blank" rel="noreferrer">Open PR</a></p>
-          <dl class="kv">
-            <dt>Challenge login</dt><dd>${gate.challenge_login}</dd>
-            <dt>Head SHA</dt><dd>${gate.head_sha.slice(0, 12)}...</dd>
-            <dt>Linked wallet</dt><dd>${gate.linked_wallet ?? 'none'}</dd>
-            <dt>Whitelist</dt><dd>${gate.is_whitelisted ? 'Exempt' : 'Not exempt'}</dd>
-          </dl>
-        </article>
+  const me = getState().me;
 
-        <article class="card">
-          <h3>Verification Actions</h3>
-          ${gateFailureState(gate)}
-          <div class="grid">
-            ${!me ? '<button id="signin-btn">Sign in with GitHub</button>' : ''}
-            ${me && !gate.linked_wallet ? '<button id="link-wallet-btn">Connect wallet</button>' : ''}
-            ${me && gate.linked_wallet && (!gate.has_sufficient_stake || !gate.lock_active) ? '<button id="fund-stake-btn" class="ghost">Fund + Stake</button>' : ''}
-            ${me && gate.linked_wallet && gate.has_sufficient_stake && gate.lock_active && gate.status !== 'VERIFIED' ? '<button id="confirm-btn">Sign PR confirmation</button>' : ''}
-            ${gate.status === 'VERIFIED' ? '<p class="success">PR verified.</p>' : ''}
-          </div>
-        </article>
-      </section>
-    `)
-  );
+  renderPage(`
+    <section class="grid two">
+      <article class="card">
+        <h2>PR Stake Gate ${gateStatusBadge(gate)}</h2>
+        <p class="meta">${gate.repo_full_name} · PR #${gate.pull_request_number}</p>
+        <p class="countdown" id="countdown">${formatCountdown(gate.deadline_at)}</p>
+        <p><a href="${gate.pull_request_url}" target="_blank" rel="noreferrer">Open PR</a></p>
+        <dl class="kv">
+          <dt>Challenge login</dt><dd>${gate.challenge_login}</dd>
+          <dt>Head SHA</dt><dd>${gate.head_sha.slice(0, 12)}...</dd>
+          <dt>Linked wallet</dt><dd>${gate.linked_wallet ?? 'none'}</dd>
+          <dt>Whitelist</dt><dd>${gate.is_whitelisted ? 'Exempt' : 'Not exempt'}</dd>
+        </dl>
+      </article>
 
-  bindNavRouting();
+      <article class="card">
+        <h3>Verification Actions</h3>
+        ${gateFailureState(gate)}
+        <div class="grid">
+          ${!me ? `<button id="signin-btn">Sign in with GitHub</button>` : ''}
+          ${me && !gate.linked_wallet ? `<button id="link-wallet-btn" ${isBusy('link-wallet') ? 'disabled' : ''}>${isBusy('link-wallet') ? 'Connecting...' : 'Connect wallet'}</button>` : ''}
+          ${
+            me && gate.linked_wallet && (!gate.has_sufficient_stake || !gate.lock_active)
+              ? '<button id="fund-stake-btn" class="ghost">Fund + Stake</button>'
+              : ''
+          }
+          ${
+            me &&
+            gate.linked_wallet &&
+            gate.has_sufficient_stake &&
+            gate.lock_active &&
+            gate.status !== 'VERIFIED'
+              ? `<button id="confirm-btn" ${isBusy('confirm-pr') ? 'disabled' : ''}>${isBusy('confirm-pr') ? 'Awaiting signature...' : 'Sign PR confirmation'}</button>`
+              : ''
+          }
+          ${gate.status === 'VERIFIED' ? '<p class="success">PR verified.</p>' : ''}
+        </div>
+      </article>
+    </section>
+  `);
 
   if (timerId) {
     window.clearInterval(timerId);
@@ -302,105 +399,175 @@ async function renderGatePage(gateToken: string): Promise<void> {
 
   const linkWalletBtn = document.querySelector<HTMLButtonElement>('#link-wallet-btn');
   linkWalletBtn?.addEventListener('click', async () => {
-    try {
-      await requestWalletLinkChallenge();
-      const signature = window.prompt('Paste wallet signature for link confirmation');
-      if (!signature) {
-        return;
-      }
-      await confirmWalletLink(signature);
-      void renderGatePage(gateToken);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Wallet linking failed');
+    const linked = await withBusyAction(
+      'link-wallet',
+      async () => {
+        const challenge = await requestWalletLinkChallenge();
+        const signature = await signMessageWithInjectedWallet(challenge.challenge);
+        await confirmWalletLink(signature);
+      },
+      { successMessage: 'Wallet linked successfully.' }
+    );
+
+    if (linked !== null) {
+      await refreshMe();
+      await renderGatePage(gateToken);
+      return;
     }
+
+    void render();
   });
 
   const fundStakeBtn = document.querySelector<HTMLButtonElement>('#fund-stake-btn');
   fundStakeBtn?.addEventListener('click', () => {
-    window.alert('Stake is insufficient or lock is inactive. Fund and lock ETH in the staking contract, then reload.');
+    addInfoNotice('Stake is insufficient or lock is inactive. Fund and lock ETH in the staking contract, then reload.');
+    void render();
   });
 
   const confirmBtn = document.querySelector<HTMLButtonElement>('#confirm-btn');
   confirmBtn?.addEventListener('click', async () => {
-    try {
-      await getConfirmTypedData(gateToken);
-      const signature = window.prompt('Paste EIP-712 signature to confirm PR');
-      if (!signature) {
-        return;
-      }
-      const result = await submitGateConfirmation(gateToken, signature);
-      if (result === 'VERIFIED') {
-        window.alert('PR verified');
-        void renderGatePage(gateToken);
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Confirmation failed');
+    const result = await withBusyAction(
+      'confirm-pr',
+      async () => {
+        const typedData = await getConfirmTypedData(gateToken);
+        const signature = await signTypedDataWithInjectedWallet(typedData, gate.linked_wallet ?? undefined);
+        return submitGateConfirmation(gateToken, signature);
+      },
+      { successMessage: 'PR verified.' }
+    );
+
+    if (result === 'VERIFIED') {
+      await renderGatePage(gateToken);
+      return;
     }
+
+    void render();
   });
 }
 
 async function renderWalletPage(): Promise<void> {
+  const me = getState().me;
   const wallet = me?.linked_wallet;
 
-  setContent(
-    withDesktopGuard(`
-      <section class="card">
-        <h2>Wallet Link Management</h2>
-        <p class="meta">One active wallet per GitHub account and one active GitHub account per wallet.</p>
-        ${!me ? '<p class="error">Sign in with GitHub first.</p><button id="wallet-signin">Sign in with GitHub</button>' : ''}
-        ${me ? `<dl class="kv"><dt>GitHub login</dt><dd>${me.github_login}</dd><dt>Linked wallet</dt><dd>${wallet ?? 'none'}</dd></dl>` : ''}
-        ${me && wallet ? '<p class="meta">Unlink is blocked if this wallet has non-zero staked balance.</p><button id="unlink-wallet" class="warn">Unlink wallet</button>' : ''}
-      </section>
-    `)
-  );
-
-  bindNavRouting();
+  renderPage(`
+    <section class="card">
+      <h2>Wallet Link Management</h2>
+      <p class="meta">One active wallet per GitHub account and one active GitHub account per wallet.</p>
+      ${!me ? '<p class="error">Sign in with GitHub first.</p><button id="wallet-signin">Sign in with GitHub</button>' : ''}
+      ${
+        me
+          ? `<dl class="kv"><dt>GitHub login</dt><dd>${me.github_login}</dd><dt>Linked wallet</dt><dd>${
+              wallet ?? 'none'
+            }</dd></dl>`
+          : ''
+      }
+      ${
+        me && !wallet
+          ? `<button id="wallet-connect" ${isBusy('link-wallet') ? 'disabled' : ''}>${isBusy('link-wallet') ? 'Connecting...' : 'Connect wallet'}</button>`
+          : ''
+      }
+      ${
+        me && wallet
+          ? `<p class="meta">Unlink is blocked if this wallet has non-zero staked balance.</p><button id="unlink-wallet" class="warn" ${
+              isBusy('unlink-wallet') ? 'disabled' : ''
+            }>${isBusy('unlink-wallet') ? 'Unlinking...' : 'Unlink wallet'}</button>`
+          : ''
+      }
+    </section>
+  `);
 
   const walletSignin = document.querySelector<HTMLButtonElement>('#wallet-signin');
   walletSignin?.addEventListener('click', () => githubSignIn());
 
+  const connectBtn = document.querySelector<HTMLButtonElement>('#wallet-connect');
+  connectBtn?.addEventListener('click', async () => {
+    const linked = await withBusyAction(
+      'link-wallet',
+      async () => {
+        const challenge = await requestWalletLinkChallenge();
+        const signature = await signMessageWithInjectedWallet(challenge.challenge);
+        await confirmWalletLink(signature);
+      },
+      { successMessage: 'Wallet linked successfully.' }
+    );
+
+    if (linked !== null) {
+      await refreshMe();
+      await renderWalletPage();
+      return;
+    }
+
+    void render();
+  });
+
   const unlinkBtn = document.querySelector<HTMLButtonElement>('#unlink-wallet');
   unlinkBtn?.addEventListener('click', async () => {
-    try {
-      await unlinkWallet();
-      window.alert('Wallet unlinked');
-      me = await getMe();
-      void renderWalletPage();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Unlink failed');
+    const unlinked = await withBusyAction(
+      'unlink-wallet',
+      async () => {
+        await unlinkWallet();
+      },
+      { successMessage: 'Wallet unlinked.' }
+    );
+
+    if (unlinked !== null) {
+      await refreshMe();
+      await renderWalletPage();
+      return;
     }
+
+    void render();
+  });
+}
+
+function renderFatalBoundary(message: string): void {
+  renderPage(`
+    <section class="card">
+      <h2>Something went wrong</h2>
+      <p class="error">${message}</p>
+      <button id="retry-render">Retry</button>
+    </section>
+  `);
+
+  const retry = document.querySelector<HTMLButtonElement>('#retry-render');
+  retry?.addEventListener('click', () => {
+    clearNotices();
+    void render();
   });
 }
 
 async function render(): Promise<void> {
-  me = await getMe();
-  const currentPath = pathName();
+  try {
+    await refreshMe();
+    const currentPath = pathName();
 
-  if (currentPath === '/') {
-    await renderOwnerSetup();
-    return;
-  }
+    if (currentPath === '/') {
+      await renderOwnerSetup();
+      return;
+    }
 
-  if (currentPath === '/wallet') {
-    await renderWalletPage();
-    return;
-  }
+    if (currentPath === '/wallet') {
+      await renderWalletPage();
+      return;
+    }
 
-  const gateToken = parseGateToken(currentPath);
-  if (gateToken) {
-    await renderGatePage(gateToken);
-    return;
-  }
+    const gateToken = parseGateToken(currentPath);
+    if (gateToken) {
+      await renderGatePage(gateToken);
+      return;
+    }
 
-  setContent(
-    withDesktopGuard(`
+    renderPage(`
       <section class="card">
         <h2>Page not found</h2>
         <p><a href="/">Return to owner setup</a></p>
       </section>
-    `)
-  );
-  bindNavRouting();
+    `);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unexpected render failure.';
+    addErrorNotice(message);
+    renderFatalBoundary(message);
+  }
 }
 
 void render();

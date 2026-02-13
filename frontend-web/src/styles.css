@@ -213,6 +213,33 @@ button:disabled {
   padding: 10px 12px;
 }
 
+.notice-toast {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+}
+
+.notice-toast p {
+  margin: 0;
+}
+
+.notice-success {
+  border-color: #90ba9a;
+  background: #e7f5eb;
+}
+
+.notice-error {
+  border-color: #d4aa96;
+  background: #fdece4;
+}
+
+.notice-info {
+  border-color: #98c8d3;
+  background: #eaf5f8;
+}
+
 .error {
   color: #7a1717;
 }
