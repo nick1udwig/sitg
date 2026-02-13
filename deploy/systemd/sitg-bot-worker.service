@@ -1,0 +1,22 @@
+[Unit]
+Description=SITG owner bot-worker
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=sitg
+Group=sitg
+WorkingDirectory=/opt/sitg/bot-worker
+EnvironmentFile=/etc/sitg/bot-worker.env
+ExecStart=/usr/bin/node /opt/sitg/bot-worker/dist/src/index.js
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/sitg/bot-worker /var/lib/sitg-bot-owner
+
+[Install]
+WantedBy=multi-user.target

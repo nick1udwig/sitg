@@ -2,6 +2,8 @@
 
 TypeScript GitHub App worker for SITG.
 
+Production runbook: `docs/13-production-runbook.md`
+
 ## Endpoints
 
 - `POST /webhooks/github`:

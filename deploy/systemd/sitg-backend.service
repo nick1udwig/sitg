@@ -1,0 +1,22 @@
+[Unit]
+Description=SITG backend-api
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=sitg
+Group=sitg
+WorkingDirectory=/opt/sitg/backend-api
+EnvironmentFile=/etc/sitg/backend.env
+ExecStart=/opt/sitg/backend-api/target/release/backend-api
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/sitg/backend-api
+
+[Install]
+WantedBy=multi-user.target

@@ -2,6 +2,8 @@
 
 Rust backend for SITG MVP.
 
+Production runbook: `docs/13-production-runbook.md`
+
 ## Stack
 
 - `axum`
