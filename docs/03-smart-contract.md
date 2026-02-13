@@ -20,7 +20,7 @@
 ```solidity
 interface IStakeToContribute {
     event Staked(address indexed user, uint256 amountAdded, uint256 newBalance, uint256 unlockTime);
-    event Withdrawn(address indexed user, uint256 amountWithdrawn);
+    event Withdrawn(address indexed user, address indexed recipient, uint256 amountWithdrawn);
 
     function stake() external payable;
     function withdraw() external;
@@ -48,11 +48,13 @@ interface IStakeToContribute {
 - Requires `block.timestamp >= unlockTime(msg.sender)`.
 - Transfers the full staked balance to sender and sets staked balance to zero.
 - Clears `unlockTime(msg.sender)` to zero after successful full withdrawal.
+- Emits `Withdrawn(msg.sender, msg.sender, amount)`.
 
 3. `withdrawTo(recipient)`
 - Same checks/state updates as `withdraw()` for the caller's stake.
 - Transfers full caller stake to `recipient`.
 - `recipient` must be non-zero.
+- Emits `Withdrawn(msg.sender, recipient, amount)`.
 
 4. `isStakeActive(user)`
 - Returns `stakedBalance(user) > 0 && block.timestamp < unlockTime(user)`.

@@ -26,7 +26,7 @@ contract StakeToContributeTest {
     address internal mallory = address(0xBEEF);
 
     event Staked(address indexed user, uint256 amountAdded, uint256 newBalance, uint256 unlockTime);
-    event Withdrawn(address indexed user, uint256 amountWithdrawn);
+    event Withdrawn(address indexed user, address indexed recipient, uint256 amountWithdrawn);
 
     function setUp() public {
         staking = new StakeToContribute();
@@ -115,8 +115,8 @@ contract StakeToContributeTest {
 
         uint256 aliceBalanceBefore = alice.balance;
 
-        vm.expectEmit(true, true, false, false, address(staking));
-        emit Withdrawn(alice, 3 ether);
+        vm.expectEmit(true, true, true, false, address(staking));
+        emit Withdrawn(alice, alice, 3 ether);
         vm.prank(alice);
         staking.withdraw();
 
@@ -249,6 +249,8 @@ contract StakeToContributeTest {
         vm.warp(unlockTs);
         uint256 aliceBefore = alice.balance;
 
+        vm.expectEmit(true, true, true, false, address(staking));
+        emit Withdrawn(address(stuck), alice, 1 ether);
         vm.prank(mallory);
         stuck.withdrawToFromTarget(payable(alice));
 

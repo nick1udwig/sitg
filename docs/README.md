@@ -26,6 +26,10 @@ This folder is the top-level product and engineering spec for MVP.
 - If CoinGecko is unavailable at save time, backend uses last cached spot.
 - Verification is point-in-time: later stake changes do not retroactively invalidate an already-verified PR challenge.
 - Retention policy: keep `audit_events` and signature records for 12 months.
+- Deployment model: many repo owners can run their own bot workers.
+- Bot auth model: tenant-scoped bot credentials (`key_id` + HMAC secret), not a single global internal secret.
+- Backend authorizes bot requests by installation/repo binding to prevent cross-tenant actions.
+- Installation binding model: exactly one active bot client per GitHub installation.
 
 ## Document index
 
@@ -38,3 +42,4 @@ This folder is the top-level product and engineering spec for MVP.
 - `docs/07-frontend.md`
 - `docs/08-post-mvp.md`
 - `docs/09-open-questions.md`
+- `docs/10-plan-changes-summary.md`

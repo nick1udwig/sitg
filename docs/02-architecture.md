@@ -16,9 +16,15 @@
 - Internal APIs for bot worker.
 
 3. `bot-worker` (TypeScript)
+- Owner-run deployment model (many bot deployments across tenants).
 - Receives GitHub webhooks.
 - Calls backend internal decision APIs.
 - Posts PR comments and closes PRs via GitHub App token.
+- Polls backend outbox for bot actions and acks results.
+
+Deployment note:
+- One webhook URL per owner deployment (can be fronted by owner load balancer with multiple replicas).
+- No per-replica webhook URLs are required.
 
 4. `postgres`
 - Source of truth for users, configs, challenges, audit logs.
@@ -33,7 +39,7 @@
 - Bot forwards normalized PR event to backend.
 - Backend returns decision (`REQUIRE_STAKE`, `EXEMPT`, etc.).
 - Bot comments on PR with gate URL when stake is required.
-- Backend schedules deadline job for 30 minutes.
+- Backend schedules deadline job for 30 minutes and writes close actions to outbox.
 
 2. Contributor verification
 - User opens gate URL and signs in with GitHub.
@@ -44,9 +50,10 @@
 - Backend marks challenge `VERIFIED`; close job becomes no-op.
 
 3. Deadline close
-- Worker executes at deadline.
-- If status still `PENDING`, re-check whitelist and status.
-- If not exempt, backend triggers bot action to close PR.
+- Backend sweeper executes deadline checks.
+- If status still `PENDING`, backend re-checks whitelist and marks timeout.
+- Backend enqueues close action in outbox.
+- Bot polls outbox claim endpoint, executes close/comment in GitHub, and posts result ack.
 
 ## Runtime invariants
 
@@ -55,3 +62,5 @@
 - Wallet unlink is blocked if on-chain staked balance is non-zero.
 - Challenge validity is scoped to repo + PR number + author + head SHA + expiry.
 - Stake must satisfy threshold and lock must still be active.
+- Bot internal requests are authorized by per-bot key and installation binding.
+- Each GitHub installation is bound to exactly one active bot client.

@@ -4,7 +4,7 @@
 
 - JSON over HTTPS.
 - Session auth via secure HTTP-only cookie for user-facing endpoints.
-- Service auth (HMAC or mTLS) for internal bot endpoints.
+- Internal bot endpoints require HMAC auth headers.
 
 ## Error format
 
@@ -16,6 +16,33 @@
   }
 }
 ```
+
+## Internal request auth (`/internal/v1/*`)
+
+Required headers:
+- `x-stc-key-id`: bot key identifier.
+- `x-stc-timestamp`: unix epoch seconds.
+- `x-stc-signature`: `sha256=<hex_hmac_sha256(secret, "{timestamp}.{message}")>`.
+
+Rules:
+- Secret is resolved from `x-stc-key-id` (`bot_client_keys`).
+- Timestamp skew must be within 5 minutes.
+- Signatures are single-use (replay-protected). Reusing the same signature returns `403 FORBIDDEN`.
+- Every retry attempt must generate a fresh timestamp + signature.
+- Key must be active and not revoked.
+- Resolved bot client must be active.
+
+Message per endpoint:
+- `POST /internal/v1/pr-events`: `{delivery_id}`
+- `POST /internal/v1/challenges/{challenge_id}/deadline-check`: `{challenge_id}`
+- `POST /internal/v1/bot-actions/claim`: `bot-actions-claim:{worker_id}`
+- `POST /internal/v1/bot-actions/{action_id}/result`: `bot-action-result:{action_id}:{worker_id}:{success}`
+
+Tenant authorization rules:
+- `/internal/v1/pr-events`: `installation_id` must be bound to authenticated bot client.
+- `/internal/v1/challenges/{challenge_id}/deadline-check`: challenge repo installation must be bound to authenticated bot client.
+- `/internal/v1/bot-actions/claim`: return only actions whose repo installation is bound to authenticated bot client.
+- `/internal/v1/bot-actions/{action_id}/result`: action must be currently claimed by provided worker and belong to authenticated bot client.
 
 ## Public endpoints
 
@@ -112,6 +139,45 @@ Request:
 
 - `DELETE /api/v1/repos/{repo_id}/whitelist/{github_user_id}`
 
+### Bot client management (repo owner only)
+
+- `GET /api/v1/bot-clients`
+- `POST /api/v1/bot-clients`
+- `GET /api/v1/bot-clients/{bot_client_id}`
+- `POST /api/v1/bot-clients/{bot_client_id}/keys`
+- `POST /api/v1/bot-clients/{bot_client_id}/keys/{key_id}/revoke`
+- `PUT /api/v1/bot-clients/{bot_client_id}/installation-bindings`
+
+Create bot client request:
+```json
+{
+  "name": "acme-prod-bot"
+}
+```
+
+Create bot key response (secret shown once):
+```json
+{
+  "key_id": "bck_live_abc123",
+  "secret": "stcbs_live_...",
+  "created_at": "2026-02-13T00:00:00Z"
+}
+```
+
+Set installation bindings request:
+```json
+{
+  "installation_ids": [100, 101]
+}
+```
+
+Binding rules:
+- Caller must own the bot client.
+- Caller must have repo-owner/admin rights for each target installation account.
+- Backend replaces the full binding set atomically (upsert + delete removed bindings).
+- Each `installation_id` can be bound to only one active bot client.
+- If any requested installation is already bound to another active bot client, return `409 INSTALLATION_ALREADY_BOUND`.
+
 ### Gate + wallet link
 
 - `GET /api/v1/gate/{gate_token}`
@@ -175,7 +241,14 @@ Validation rules:
 
 ## Internal endpoints (bot integration)
 
+Webhook-driven endpoint:
 - `POST /internal/v1/pr-events`
+
+Queue/outbox endpoints (primary deadline execution path):
+- `POST /internal/v1/bot-actions/claim`
+- `POST /internal/v1/bot-actions/{action_id}/result`
+
+Legacy/manual endpoint (optional):
 - `POST /internal/v1/challenges/{challenge_id}/deadline-check`
 
 `/pr-events` request:
@@ -215,3 +288,79 @@ Decision enum:
 - `EXEMPT`
 - `ALREADY_VERIFIED`
 - `REQUIRE_STAKE`
+
+`/bot-actions/claim` request:
+```json
+{
+  "worker_id": "owner-bot-1",
+  "limit": 25
+}
+```
+
+`/bot-actions/claim` response:
+```json
+{
+  "actions": [
+    {
+      "id": "uuid",
+      "action_type": "CLOSE_PR",
+      "challenge_id": "uuid",
+      "github_repo_id": 1,
+      "github_pr_number": 42,
+      "payload": {
+        "comment_markdown": "Stake verification was not completed within 30 minutes, so this PR has been closed."
+      }
+    }
+  ]
+}
+```
+
+`/bot-actions/{action_id}/result` request:
+```json
+{
+  "worker_id": "owner-bot-1",
+  "success": true,
+  "failure_reason": null,
+  "retryable": null
+}
+```
+
+`/bot-actions/{action_id}/result` response:
+```json
+{
+  "id": "uuid",
+  "status": "DONE"
+}
+```
+
+Bot action result status enum:
+- `DONE`
+- `PENDING`
+- `FAILED`
+
+`/deadline-check` response (`NOOP`):
+```json
+{
+  "action": "NOOP",
+  "close": null
+}
+```
+
+`/deadline-check` response (`CLOSE_PR`):
+```json
+{
+  "action": "CLOSE_PR",
+  "close": {
+    "github_repo_id": 1,
+    "github_pr_number": 42,
+    "comment_markdown": "Stake verification was not completed within 30 minutes, so this PR has been closed."
+  }
+}
+```
+
+`/deadline-check` action enum:
+- `NOOP`
+- `CLOSE_PR`
+
+Constraint:
+- `close` must be present when `action = CLOSE_PR`.

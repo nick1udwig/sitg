@@ -11,11 +11,12 @@ Stake-to-Contribute is a SaaS + GitHub App that gates PRs by requiring contribut
 ## Core behavior
 
 1. Repo owner installs GitHub App and configures minimum stake requirement.
-2. Contributor opens PR.
-3. Bot comments with a gate link and 30-minute deadline.
-4. Contributor signs in on SaaS, links wallet, and signs PR confirmation.
-5. Backend validates signature + on-chain stake.
-6. If valid, PR is marked verified; if not valid by deadline, bot closes PR.
+2. Repo owner runs their bot worker deployment and binds it to their GitHub installation in SaaS.
+3. Contributor opens PR.
+4. Bot comments with a gate link and 30-minute deadline.
+5. Contributor signs in on SaaS, links wallet, and signs PR confirmation.
+6. Backend validates signature + on-chain stake.
+7. If valid, PR is marked verified; if not valid by deadline, backend enqueues close action for owner bot.
 
 ## Key product rules
 

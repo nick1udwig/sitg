@@ -37,6 +37,38 @@ Constraints:
 - `created_at timestamptz not null`
 - `updated_at timestamptz not null`
 
+### `bot_clients`
+
+- `id uuid pk`
+- `owner_user_id uuid not null references users(id)`
+- `name text not null`
+- `status text not null check (status in ('ACTIVE','DISABLED'))`
+- `created_at timestamptz not null`
+- `updated_at timestamptz not null`
+
+### `bot_client_keys`
+
+- `key_id text pk`
+- `bot_client_id uuid not null references bot_clients(id)`
+- `secret_hash text not null`
+- `active boolean not null default true`
+- `last_used_at timestamptz null`
+- `revoked_at timestamptz null`
+- `created_at timestamptz not null`
+
+Indexes/constraints:
+- index on `(bot_client_id, active)`.
+
+### `bot_installation_bindings`
+
+- `bot_client_id uuid not null references bot_clients(id)`
+- `installation_id bigint not null references github_installations(installation_id)`
+- `created_at timestamptz not null`
+- primary key `(bot_client_id, installation_id)`
+
+Indexes/constraints:
+- unique `(installation_id)` to enforce one active bot client per installation.
+
 ### `repo_configs`
 
 - `github_repo_id bigint pk`
@@ -78,6 +110,7 @@ Constraints:
 - `deadline_at timestamptz not null`
 - `status text not null check (status in ('PENDING','VERIFIED','EXEMPT','TIMED_OUT_CLOSED','CANCELED'))`
 - `verified_wallet_address text null`
+- `created_by_bot_client_id uuid null references bot_clients(id)`
 - `created_at timestamptz not null`
 - `updated_at timestamptz not null`
 
@@ -109,6 +142,34 @@ Indexes/constraints:
 - `entity_id text not null`
 - `payload jsonb not null`
 - `created_at timestamptz not null`
+
+### `internal_request_replays`
+
+- `id uuid pk`
+- `signature text not null unique`
+- `timestamp_unix bigint not null`
+- `created_at timestamptz not null`
+
+### `bot_actions`
+
+- `id uuid pk`
+- `action_type text not null` (for MVP: `CLOSE_PR`)
+- `challenge_id uuid null references pr_challenges(id)`
+- `github_repo_id bigint not null`
+- `github_pr_number int not null`
+- `payload jsonb not null`
+- `status text not null check (status in ('PENDING','CLAIMED','DONE','FAILED'))`
+- `claimed_by text null`
+- `claimed_at timestamptz null`
+- `completed_at timestamptz null`
+- `failure_reason text null`
+- `attempts int not null default 0`
+- `created_at timestamptz not null`
+- `updated_at timestamptz not null`
+
+Indexes:
+- `(status, created_at)` for claim scans.
+- `(github_repo_id, github_pr_number)` for action lookup.
 
 ### `spot_quotes`
 
@@ -144,3 +205,20 @@ Indexes:
 5. Retention
 - Retain rows in `audit_events` and `pr_confirmations` for 12 months.
 - After 12 months, delete or anonymize per ops policy.
+
+6. Tenant-scoped bot auth
+- Every internal bot request resolves to a `bot_client` via `bot_client_keys.key_id`.
+- Backend must verify the request installation/repo/challenge is bound to that `bot_client` via `bot_installation_bindings`.
+- Cross-tenant access attempts are rejected with `403 FORBIDDEN`.
+
+7. Outbox claiming
+- Bot action execution uses `bot_actions` claim/ack flow.
+- Claim must lock and assign actions atomically so one action is processed by one worker.
+
+8. Bot binding authorization
+- API layer must ensure only the bot owner can mutate that bot's installation bindings.
+- API layer must ensure caller has owner/admin rights for each bound installation.
+
+9. Installation exclusivity
+- Exactly one active bot client may be bound to a given `installation_id`.
+- Binding an installation already bound to another active bot client must fail with conflict.

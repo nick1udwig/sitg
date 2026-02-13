@@ -3,6 +3,8 @@
 ## Implementation
 
 - Language/runtime: TypeScript (Node.js).
+- Deployment model: repo owners run their own bot worker(s).
+- Each owner uses one webhook URL; multi-replica deployments sit behind that URL.
 
 ## App permissions (MVP)
 
@@ -24,18 +26,19 @@
 - Verify webhook signature.
 - Normalize payload and send to backend `/internal/v1/pr-events`.
 - Apply backend decision.
+- Sign backend internal requests using `x-stc-key-id`, `x-stc-timestamp`, and `x-stc-signature` HMAC.
 
 2. If `REQUIRE_STAKE`:
 - Post gate comment with unique gate URL and deadline.
-- Ensure deadline job exists.
+- No local deadline timer is required when outbox polling mode is enabled.
 
 3. If `EXEMPT`:
 - Optionally comment that user is exempt (configurable, likely off by default).
 
 4. On deadline job:
-- Call backend `/internal/v1/challenges/{challenge_id}/deadline-check`.
-- If backend returns close action, close PR and add timeout comment.
-- If backend says exempt/verified, do not close.
+- Primary mode: poll backend `/internal/v1/bot-actions/claim`.
+- For each claimed `CLOSE_PR` action, close PR and post timeout comment, then ack via `/internal/v1/bot-actions/{action_id}/result`.
+- Optional/manual fallback: call `/internal/v1/challenges/{challenge_id}/deadline-check`.
 
 ## Draft PR rule
 
@@ -45,7 +48,9 @@
 ## Idempotency
 
 - Use GitHub delivery ID + action + PR number keys to deduplicate retries.
+- Internal backend HMAC signatures are single-use; retried calls must be re-signed with a fresh timestamp.
 - Re-running close command should be safe if PR is already closed.
+- If running multiple replicas for one owner, dedup/deadline state must be shared or delegated to backend outbox mode.
 
 ## Comment template (MVP)
 

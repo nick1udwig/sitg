@@ -14,6 +14,9 @@
 - Show computed enforced ETH + current USD estimate.
 - Configure `draft_prs_gated` toggle (default `on`).
 - Manage whitelist by GitHub login (repo owner only).
+- Create/manage bot client credentials (`key_id` + secret shown once).
+- Bind bot client to GitHub installation IDs.
+- If an installation is already bound to another bot client, show conflict and block save.
 
 2. Contributor gate page (`/g/{gate_token}`)
 - Shows PR context and countdown timer.

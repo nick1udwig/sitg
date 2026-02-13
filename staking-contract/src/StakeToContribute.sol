@@ -45,7 +45,7 @@ contract StakeToContribute is IStakeToContribute {
         (bool ok, ) = recipient.call{value: currentBalance}("");
         if (!ok) revert EthTransferFailed();
 
-        emit Withdrawn(msg.sender, currentBalance);
+        emit Withdrawn(msg.sender, recipient, currentBalance);
     }
 
     function stakedBalance(address user) external view returns (uint256) {
