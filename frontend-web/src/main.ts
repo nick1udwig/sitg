@@ -16,7 +16,11 @@ import {
 import { formatCountdown, gateFailureMessage, parseGateToken } from './gate-logic';
 import type { GateViewResponse, MeResponse, RepoConfigResponse, WhitelistEntry } from './types';
 
-const app = document.querySelector<HTMLDivElement>('#app') as HTMLDivElement;
+const app = document.querySelector<HTMLDivElement>('#app');
+if (!app) {
+  throw new Error('Missing #app root element');
+}
+const appRoot = app;
 
 let me: MeResponse | null = null;
 let timerId: number | null = null;
@@ -30,7 +34,7 @@ function isDesktopSupported(): boolean {
 }
 
 function setContent(content: string): void {
-  app.innerHTML = content;
+  appRoot.innerHTML = content;
 }
 
 function shell(content: string): string {
