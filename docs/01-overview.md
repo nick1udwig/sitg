@@ -6,7 +6,7 @@ Open-source maintainers face high inbound PR spam. Reviewing low-signal PRs cons
 
 ## Product
 
-Stake-to-Contribute is a SaaS + GitHub App that gates PRs by requiring contributors to hold active ETH stake in a shared staking contract on Base.
+SITG (Skin in the Game) is a SaaS + GitHub App that gates PRs by requiring contributors to hold active ETH stake in a shared staking contract on Base.
 
 ## Core behavior
 

@@ -1,11 +1,11 @@
-# Stake-to-Contribute Smart Contract
+# SITG Smart Contract
 
 Foundry package implementing the MVP staking contract from `docs/03-smart-contract.md`.
 
 ## Contract
 
-- `src/IStakeToContribute.sol`: Interface from the product spec.
-- `src/StakeToContribute.sol`: Minimal ETH staking implementation.
+- `src/ISITGStaking.sol`: Interface from the product spec.
+- `src/SITGStaking.sol`: Minimal ETH staking implementation.
 
 Behavior implemented:
 - `stake()` requires positive value only for first stake; existing stakers may call with `0` to refresh lock.
@@ -17,7 +17,7 @@ Behavior implemented:
 
 ## Tests
 
-- `test/StakeToContribute.t.sol` covers lock duration, stake/withdraw guards, lock reset on restake, and active boundary semantics.
+- `test/SITGStaking.t.sol` covers lock duration, stake/withdraw guards, lock reset on restake, and active boundary semantics.
 
 ## Run
 
@@ -40,7 +40,7 @@ export BASE_MAINNET_RPC_URL=https://...
 Deploy to Base Sepolia:
 
 ```bash
-forge script script/DeployStakeToContribute.s.sol:DeployStakeToContributeScript \
+forge script script/DeploySITGStaking.s.sol:DeploySITGStakingScript \
   --rpc-url $BASE_SEPOLIA_RPC_URL \
   --broadcast
 ```
@@ -48,7 +48,7 @@ forge script script/DeployStakeToContribute.s.sol:DeployStakeToContributeScript 
 Deploy to Base mainnet:
 
 ```bash
-forge script script/DeployStakeToContribute.s.sol:DeployStakeToContributeScript \
+forge script script/DeploySITGStaking.s.sol:DeploySITGStakingScript \
   --rpc-url $BASE_MAINNET_RPC_URL \
   --broadcast
 ```

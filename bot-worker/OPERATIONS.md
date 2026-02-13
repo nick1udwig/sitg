@@ -8,23 +8,23 @@
 
 Key counters:
 
-- `stc_bot_webhook_events_total`
-- `stc_bot_webhook_ignored_total`
-- `stc_bot_webhook_duplicate_total`
-- `stc_bot_webhook_decision_require_stake_total`
-- `stc_bot_deadline_run_total`
-- `stc_bot_deadline_close_total`
-- `stc_bot_deadline_noop_total`
-- `stc_bot_outbox_claim_total`
-- `stc_bot_outbox_actions_claimed_total`
-- `stc_bot_outbox_actions_success_total`
-- `stc_bot_outbox_actions_failed_total`
-- `stc_bot_errors_total`
+- `sitg_bot_webhook_events_total`
+- `sitg_bot_webhook_ignored_total`
+- `sitg_bot_webhook_duplicate_total`
+- `sitg_bot_webhook_decision_require_stake_total`
+- `sitg_bot_deadline_run_total`
+- `sitg_bot_deadline_close_total`
+- `sitg_bot_deadline_noop_total`
+- `sitg_bot_outbox_claim_total`
+- `sitg_bot_outbox_actions_claimed_total`
+- `sitg_bot_outbox_actions_success_total`
+- `sitg_bot_outbox_actions_failed_total`
+- `sitg_bot_errors_total`
 
 Suggested alerts:
 
-- sustained increase in `stc_bot_errors_total`
-- `stc_bot_deadline_run_total` increases while `stc_bot_deadline_close_total` is unexpectedly zero
+- sustained increase in `sitg_bot_errors_total`
+- `sitg_bot_deadline_run_total` increases while `sitg_bot_deadline_close_total` is unexpectedly zero
 - webhook total drops to zero during expected traffic windows
 
 ## Retry and idempotency

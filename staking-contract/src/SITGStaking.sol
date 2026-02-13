@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IStakeToContribute} from "./IStakeToContribute.sol";
+import {ISITGStaking} from "./ISITGStaking.sol";
 
-contract StakeToContribute is IStakeToContribute {
+contract SITGStaking is ISITGStaking {
     uint256 private immutable _lockDuration;
     uint256 private _totalStaked;
     mapping(address => uint256) private _stakedBalance;

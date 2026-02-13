@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PG_CONTAINER="stc-e2e-postgres"
+PG_CONTAINER="sitg-e2e-postgres"
+LEGACY_PG_CONTAINER="stc-e2e-postgres"
 POSTGRES_PORT="55432"
 POSTGRES_USER="postgres"
 POSTGRES_PASSWORD="postgres"
-POSTGRES_DB="stake_to_contribute"
+POSTGRES_DB="sitg"
 POSTGRES_IMAGE="postgres:16-alpine"
 
 usage() {
@@ -16,11 +17,11 @@ Usage:
   postgres-docker.sh [options] down
 
 Options:
-  --container <name>   Container name (default: stc-e2e-postgres)
+  --container <name>   Container name (default: sitg-e2e-postgres)
   --port <port>        Host port mapped to 5432 (default: 55432)
   --user <user>        Postgres user (default: postgres)
   --password <pass>    Postgres password (default: postgres)
-  --db <name>          Postgres database name (default: stake_to_contribute)
+  --db <name>          Postgres database name (default: sitg)
   --image <image>      Docker image (default: postgres:16-alpine)
 EOF
 }
@@ -32,6 +33,29 @@ fail() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+container_exists() {
+  local name="$1"
+  docker container inspect "$name" >/dev/null 2>&1
+}
+
+remove_container_if_exists() {
+  local name="$1"
+  if container_exists "$name"; then
+    docker rm -f "$name"
+  fi
+}
+
+validate_port_conflicts() {
+  local name
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    if [[ "$name" == "$PG_CONTAINER" || "$name" == "$LEGACY_PG_CONTAINER" ]]; then
+      continue
+    fi
+    fail "Port ${POSTGRES_PORT} is already used by container '${name}'. Stop/remove it or use --port."
+  done < <(docker ps -a --filter "publish=${POSTGRES_PORT}" --format '{{.Names}}')
 }
 
 while [[ $# -gt 0 ]]; do
@@ -81,7 +105,12 @@ require_cmd docker
 
 case "$command_name" in
   up)
-    docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+    remove_container_if_exists "$PG_CONTAINER"
+    # Backward-compat cleanup for previous default name.
+    if [[ "$PG_CONTAINER" == "sitg-e2e-postgres" ]]; then
+      remove_container_if_exists "$LEGACY_PG_CONTAINER"
+    fi
+    validate_port_conflicts
     docker run -d \
       --name "$PG_CONTAINER" \
       -e POSTGRES_USER="$POSTGRES_USER" \
@@ -101,7 +130,19 @@ case "$command_name" in
     fail "Postgres did not become ready within ${timeout}s"
     ;;
   down)
-    docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+    removed="0"
+    if container_exists "$PG_CONTAINER"; then
+      docker rm -f "$PG_CONTAINER"
+      removed="1"
+    fi
+    # Backward-compat cleanup for previous default name.
+    if [[ "$PG_CONTAINER" == "sitg-e2e-postgres" ]] && container_exists "$LEGACY_PG_CONTAINER"; then
+      docker rm -f "$LEGACY_PG_CONTAINER"
+      removed="1"
+    fi
+    if [[ "$removed" == "0" ]]; then
+      printf '[pg-docker] Container not found, nothing to remove: %s\n' "$PG_CONTAINER"
+    fi
     ;;
   *)
     fail "Unknown command: $command_name"

@@ -28,8 +28,8 @@ type Action =
   | { type: 'dismiss_notice'; index: number }
   | { type: 'clear_notices' };
 
-const RECENT_REPOS_KEY = 'stc.recentRepos';
-const SELECTED_REPO_KEY = 'stc.selectedRepo';
+const RECENT_REPOS_KEY = 'sitg.recentRepos';
+const SELECTED_REPO_KEY = 'sitg.selectedRepo';
 
 function loadLocalRepos(): RepoSelection[] {
   try {

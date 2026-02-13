@@ -123,7 +123,7 @@ describe('GatePage confirmation flow', () => {
     });
     apiMocks.getConfirmTypedData.mockResolvedValue({
       domain: {
-        name: 'StakeToContribute',
+        name: 'SITG',
         version: '1',
         chainId: 8453,
         verifyingContract: '0x0000000000000000000000000000000000000001'

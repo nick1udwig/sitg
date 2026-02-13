@@ -1,6 +1,6 @@
 # backend-api
 
-Rust backend for Stake-to-Contribute MVP.
+Rust backend for SITG MVP.
 
 ## Stack
 
@@ -13,10 +13,10 @@ Rust backend for Stake-to-Contribute MVP.
 1. Set env vars:
 
 ```bash
-export DATABASE_URL=postgres://postgres:postgres@localhost:5432/stake_to_contribute
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/sitg
 export HOST=0.0.0.0
 export PORT=8080
-export APP_BASE_URL=https://app.example.com
+export APP_BASE_URL=https://sitg.io
 export API_BASE_URL=http://localhost:8080
 export GITHUB_CLIENT_ID=...
 export GITHUB_CLIENT_SECRET=...
@@ -53,9 +53,9 @@ cargo test
 ## Internal Endpoint Auth
 
 Internal endpoints require:
-- `x-stc-key-id`: bot key id
-- `x-stc-timestamp`: unix seconds
-- `x-stc-signature`: `sha256=<hex-hmac>`
+- `x-sitg-key-id`: bot key id
+- `x-sitg-timestamp`: unix seconds
+- `x-sitg-signature`: `sha256=<hex-hmac>`
 
 Signature payload format:
 
@@ -73,7 +73,7 @@ Internal replay protection:
 - Signatures are single-use and persisted in `internal_request_replays`.
 
 Tenant auth model:
-- `x-stc-key-id` resolves to `bot_client_keys`.
+- `x-sitg-key-id` resolves to `bot_client_keys`.
 - Requests are authorized against `bot_installation_bindings`.
 
 ## Background Jobs

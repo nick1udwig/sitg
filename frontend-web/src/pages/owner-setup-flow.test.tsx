@@ -117,7 +117,7 @@ describe('OwnerSetupPage flow', () => {
     });
     apiMocks.createBotClientKey.mockResolvedValue({
       key_id: 'bck_live_new',
-      secret: 'stcbs_live_secret',
+      secret: 'sitgbs_live_secret',
       created_at: '2026-02-13T00:00:00Z'
     });
     apiMocks.revokeBotClientKey.mockResolvedValue(undefined);

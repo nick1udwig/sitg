@@ -28,13 +28,13 @@ impl Config {
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(10);
-        let app_base_url = env::var("APP_BASE_URL").unwrap_or_else(|_| "https://app.example.com".to_string());
+        let app_base_url = env::var("APP_BASE_URL").unwrap_or_else(|_| "https://sitg.io".to_string());
         let api_base_url = env::var("API_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
         let github_client_id = env::var("GITHUB_CLIENT_ID").ok();
         let github_client_secret = env::var("GITHUB_CLIENT_SECRET").ok();
         let github_owner_check_token = env::var("GITHUB_OWNER_CHECK_TOKEN").ok();
         let session_cookie_name =
-            env::var("SESSION_COOKIE_NAME").unwrap_or_else(|_| "stc_session".to_string());
+            env::var("SESSION_COOKIE_NAME").unwrap_or_else(|_| "sitg_session".to_string());
         let blocked_unlink_wallets = env::var("BLOCKED_UNLINK_WALLETS")
             .unwrap_or_default()
             .split(',')

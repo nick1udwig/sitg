@@ -8,7 +8,7 @@ if (!projectId) {
 }
 
 export const wagmiConfig = getDefaultConfig({
-  appName: 'Stake-to-Contribute',
+  appName: 'SITG',
   projectId: projectId ?? 'missing-project-id',
   chains: [base],
   ssr: false

@@ -1,4 +1,4 @@
-# Stake-to-Contribute Docs
+# SITG Docs
 
 This folder is the top-level product and engineering spec for MVP.
 

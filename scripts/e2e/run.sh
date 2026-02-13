@@ -15,7 +15,7 @@ BOT_PORT="${BOT_PORT:-3000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 MOCK_GITHUB_PORT="${MOCK_GITHUB_PORT:-9010}"
 
-POSTGRES_URL="${POSTGRES_URL:-postgres://postgres:postgres@127.0.0.1:${POSTGRES_PORT}/stake_to_contribute}"
+POSTGRES_URL="${POSTGRES_URL:-postgres://postgres:postgres@127.0.0.1:${POSTGRES_PORT}/sitg}"
 ANVIL_RPC_URL="http://127.0.0.1:${ANVIL_PORT}"
 BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}"
 BOT_URL="http://127.0.0.1:${BOT_PORT}"
@@ -153,7 +153,7 @@ cast block-number --rpc-url "$ANVIL_RPC_URL" >/dev/null 2>&1 || fail "Anvil did 
 info "Deploying staking contract to Anvil"
 deploy_json="$(
   cd "$ROOT_DIR/staking-contract"
-  forge create src/StakeToContribute.sol:StakeToContribute \
+  forge create src/SITGStaking.sol:SITGStaking \
     --rpc-url "$ANVIL_RPC_URL" \
     --private-key "$ANVIL_DEPLOYER_PRIVATE_KEY" \
     --broadcast \
@@ -349,7 +349,7 @@ info "Scenario 0: auth/session and frontend route sanity checks"
 ME_NO_COOKIE_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' "$BACKEND_URL/api/v1/me")"
 [[ "$ME_NO_COOKIE_STATUS" == "401" ]] || fail "Expected /api/v1/me without cookie to return 401, got ${ME_NO_COOKIE_STATUS}"
 
-curl -fsS -H "Cookie: stc_session=${CONTRIB_SESSION_TOKEN}" "$BACKEND_URL/api/v1/me" >"$TMP_DIR/me-contrib.json"
+curl -fsS -H "Cookie: sitg_session=${CONTRIB_SESSION_TOKEN}" "$BACKEND_URL/api/v1/me" >"$TMP_DIR/me-contrib.json"
 node - "$TMP_DIR/me-contrib.json" <<'NODE'
 const fs = require("node:fs");
 const p = process.argv[2];
@@ -407,7 +407,7 @@ NODE
 curl -fsS "$MOCK_GITHUB_URL/_state" | node -e '
 let s=""; process.stdin.on("data", d => s += d).on("end", () => {
   const st = JSON.parse(s);
-  const hasGate = st.comments.some((c) => c.thread === "owner/repo#1" && c.comments.some((m) => m.body.includes("stake-to-contribute:gate:")));
+  const hasGate = st.comments.some((c) => c.thread === "owner/repo#1" && c.comments.some((m) => m.body.includes("sitg:gate:")));
   if (!hasGate) {
     console.error("gate comment not found for PR1");
     process.exit(1);
@@ -420,7 +420,7 @@ cast send "$STAKING_CONTRACT_ADDRESS" "stake()" \
   --rpc-url "$ANVIL_RPC_URL" >/dev/null
 
 curl -fsS \
-  -H "Cookie: stc_session=${CONTRIB_SESSION_TOKEN}" \
+  -H "Cookie: sitg_session=${CONTRIB_SESSION_TOKEN}" \
   "$BACKEND_URL/api/v1/gate/${PR1_GATE_TOKEN}/confirm-typed-data" >"$TMP_DIR/pr1-typed-raw.json"
 
 node - "$TMP_DIR/pr1-typed-raw.json" "$TMP_DIR/pr1-typed-sign.json" <<'NODE'
@@ -455,7 +455,7 @@ NODE
 PR1_SIGNATURE="$(cast wallet sign --data --from-file "$TMP_DIR/pr1-typed-sign.json" --private-key "$CONTRIB_PRIVATE_KEY" | tr -d '\n')"
 curl -fsS -X POST "$BACKEND_URL/api/v1/gate/${PR1_GATE_TOKEN}/confirm" \
   -H "content-type: application/json" \
-  -H "Cookie: stc_session=${CONTRIB_SESSION_TOKEN}" \
+  -H "Cookie: sitg_session=${CONTRIB_SESSION_TOKEN}" \
   --data "{\"signature\":\"${PR1_SIGNATURE}\"}" >/dev/null
 
 PR1_STATUS="$(wait_nonempty_query "select status from pr_challenges where id = '${PR1_CHALLENGE_ID}'::uuid" 10)" || fail "PR1 status missing"
@@ -503,9 +503,9 @@ PR2_CHALLENGE_ID="$(wait_nonempty_query "select id::text from pr_challenges wher
 NOW_TS="$(date +%s)"
 CHECK_SIG="$(hmac_sha256_hex_internal "$BOT_RAW_SECRET" "${NOW_TS}.${PR2_CHALLENGE_ID}")"
 curl -fsS -X POST "$BACKEND_URL/internal/v1/challenges/${PR2_CHALLENGE_ID}/deadline-check" \
-  -H "x-stc-key-id: ${BOT_KEY_ID}" \
-  -H "x-stc-timestamp: ${NOW_TS}" \
-  -H "x-stc-signature: sha256=${CHECK_SIG}" >/dev/null
+  -H "x-sitg-key-id: ${BOT_KEY_ID}" \
+  -H "x-sitg-timestamp: ${NOW_TS}" \
+  -H "x-sitg-signature: sha256=${CHECK_SIG}" >/dev/null
 
 wait_nonempty_query "select id::text from bot_actions where challenge_id = '${PR2_CHALLENGE_ID}'::uuid and status = 'DONE' limit 1" 30 >/dev/null || fail "PR2 bot action did not complete"
 
@@ -516,7 +516,7 @@ curl -fsS "$MOCK_GITHUB_URL/_state" | node -e '
 let s=""; process.stdin.on("data", d => s += d).on("end", () => {
   const st = JSON.parse(s);
   const closed = st.pulls.some((p) => p.key === "owner/repo#2" && p.state === "closed");
-  const timeoutComment = st.comments.some((c) => c.thread === "owner/repo#2" && c.comments.some((m) => m.body.includes("stake-to-contribute:timeout:")));
+  const timeoutComment = st.comments.some((c) => c.thread === "owner/repo#2" && c.comments.some((m) => m.body.includes("sitg:timeout:")));
   if (!closed) {
     console.error("PR2 was not closed by bot");
     process.exit(1);
@@ -529,14 +529,14 @@ let s=""; process.stdin.on("data", d => s += d).on("end", () => {
 
 info "Scenario 3: replay protection rejects duplicate internal signature"
 REPLAY_STATUS_1="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BACKEND_URL/internal/v1/challenges/${PR2_CHALLENGE_ID}/deadline-check" \
-  -H "x-stc-key-id: ${BOT_KEY_ID}" \
-  -H "x-stc-timestamp: ${NOW_TS}" \
-  -H "x-stc-signature: sha256=${CHECK_SIG}")"
+  -H "x-sitg-key-id: ${BOT_KEY_ID}" \
+  -H "x-sitg-timestamp: ${NOW_TS}" \
+  -H "x-sitg-signature: sha256=${CHECK_SIG}")"
 [[ "$REPLAY_STATUS_1" == "403" ]] || fail "Expected duplicate replay signature to return 403, got ${REPLAY_STATUS_1}"
 
 info "Scenario 4: wallet link challenge/confirm and unlink guards"
 curl -fsS -X POST "$BACKEND_URL/api/v1/wallet/link/challenge" \
-  -H "Cookie: stc_session=${CONTRIB_SESSION_TOKEN}" >"$TMP_DIR/wallet-link-challenge.json"
+  -H "Cookie: sitg_session=${CONTRIB_SESSION_TOKEN}" >"$TMP_DIR/wallet-link-challenge.json"
 
 WL_NONCE="$(node - "$TMP_DIR/wallet-link-challenge.json" <<'NODE'
 const fs = require("node:fs");
@@ -556,7 +556,7 @@ NODE
 WL_SIGNATURE="$(cast wallet sign "$WL_MESSAGE" --private-key "$CONTRIB_PRIVATE_KEY" | tr -d '\n')"
 curl -fsS -X POST "$BACKEND_URL/api/v1/wallet/link/confirm" \
   -H "content-type: application/json" \
-  -H "Cookie: stc_session=${CONTRIB_SESSION_TOKEN}" \
+  -H "Cookie: sitg_session=${CONTRIB_SESSION_TOKEN}" \
   --data "{\"nonce\":\"${WL_NONCE}\",\"wallet_address\":\"${CONTRIB_ADDRESS}\",\"signature\":\"${WL_SIGNATURE}\"}" >"$TMP_DIR/wallet-link-confirm.json"
 
 node - "$TMP_DIR/wallet-link-confirm.json" <<'NODE'
@@ -569,7 +569,7 @@ if (!body.linked || !String(body.wallet_address || "").startsWith("0x")) {
 NODE
 
 UNLINK_ACTIVE_STATUS="$(curl -sS -o "$TMP_DIR/unlink-active.json" -w '%{http_code}' -X DELETE "$BACKEND_URL/api/v1/wallet/link" \
-  -H "Cookie: stc_session=${CONTRIB_SESSION_TOKEN}")"
+  -H "Cookie: sitg_session=${CONTRIB_SESSION_TOKEN}")"
 [[ "$UNLINK_ACTIVE_STATUS" == "409" ]] || fail "Expected unlink with active stake to fail 409, got ${UNLINK_ACTIVE_STATUS}"
 node - "$TMP_DIR/unlink-active.json" <<'NODE'
 const fs = require("node:fs");
@@ -588,7 +588,7 @@ cast send "$STAKING_CONTRACT_ADDRESS" "withdraw()" \
   --rpc-url "$ANVIL_RPC_URL" >/dev/null
 
 UNLINK_CLEAR_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$BACKEND_URL/api/v1/wallet/link" \
-  -H "Cookie: stc_session=${CONTRIB_SESSION_TOKEN}")"
+  -H "Cookie: sitg_session=${CONTRIB_SESSION_TOKEN}")"
 [[ "$UNLINK_CLEAR_STATUS" == "204" ]] || fail "Expected unlink after withdraw to return 204, got ${UNLINK_CLEAR_STATUS}"
 
 ACTIVE_WALLET_AFTER_UNLINK="$(psql "$POSTGRES_URL" -Atqc "select wallet_address from wallet_links wl join users u on u.id = wl.user_id where u.github_user_id = 2002 and wl.unlinked_at is null limit 1")"
@@ -630,9 +630,9 @@ SQL
 PR3_NOW_TS="$(date +%s)"
 PR3_CHECK_SIG="$(hmac_sha256_hex_internal "$BOT_RAW_SECRET" "${PR3_NOW_TS}.${PR3_CHALLENGE_ID}")"
 curl -fsS -X POST "$BACKEND_URL/internal/v1/challenges/${PR3_CHALLENGE_ID}/deadline-check" \
-  -H "x-stc-key-id: ${BOT_KEY_ID}" \
-  -H "x-stc-timestamp: ${PR3_NOW_TS}" \
-  -H "x-stc-signature: sha256=${PR3_CHECK_SIG}" >"$TMP_DIR/pr3-deadline.json"
+  -H "x-sitg-key-id: ${BOT_KEY_ID}" \
+  -H "x-sitg-timestamp: ${PR3_NOW_TS}" \
+  -H "x-sitg-signature: sha256=${PR3_CHECK_SIG}" >"$TMP_DIR/pr3-deadline.json"
 node - "$TMP_DIR/pr3-deadline.json" <<'NODE'
 const fs = require("node:fs");
 const body = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -722,9 +722,9 @@ BA_RETRY_TS="$(date +%s)"
 BA_RETRY_SIG="$(hmac_sha256_hex_internal "$BOT_RAW_SECRET" "${BA_RETRY_TS}.bot-action-result:${BA_RETRY_ID}:${BA_WORKER}:false")"
 curl -fsS -X POST "$BACKEND_URL/internal/v1/bot-actions/${BA_RETRY_ID}/result" \
   -H "content-type: application/json" \
-  -H "x-stc-key-id: ${BOT_KEY_ID}" \
-  -H "x-stc-timestamp: ${BA_RETRY_TS}" \
-  -H "x-stc-signature: sha256=${BA_RETRY_SIG}" \
+  -H "x-sitg-key-id: ${BOT_KEY_ID}" \
+  -H "x-sitg-timestamp: ${BA_RETRY_TS}" \
+  -H "x-sitg-signature: sha256=${BA_RETRY_SIG}" \
   --data "{\"worker_id\":\"${BA_WORKER}\",\"success\":false,\"failure_reason\":\"retry me\",\"retryable\":true}" >"$TMP_DIR/ba-retry.json"
 node - "$TMP_DIR/ba-retry.json" <<'NODE'
 const fs = require("node:fs");
@@ -739,9 +739,9 @@ BA_FAIL_TS="$(date +%s)"
 BA_FAIL_SIG="$(hmac_sha256_hex_internal "$BOT_RAW_SECRET" "${BA_FAIL_TS}.bot-action-result:${BA_FAIL_ID}:${BA_WORKER}:false")"
 curl -fsS -X POST "$BACKEND_URL/internal/v1/bot-actions/${BA_FAIL_ID}/result" \
   -H "content-type: application/json" \
-  -H "x-stc-key-id: ${BOT_KEY_ID}" \
-  -H "x-stc-timestamp: ${BA_FAIL_TS}" \
-  -H "x-stc-signature: sha256=${BA_FAIL_SIG}" \
+  -H "x-sitg-key-id: ${BOT_KEY_ID}" \
+  -H "x-sitg-timestamp: ${BA_FAIL_TS}" \
+  -H "x-sitg-signature: sha256=${BA_FAIL_SIG}" \
   --data "{\"worker_id\":\"${BA_WORKER}\",\"success\":false,\"failure_reason\":\"hard failure\",\"retryable\":false}" >"$TMP_DIR/ba-fail.json"
 node - "$TMP_DIR/ba-fail.json" <<'NODE'
 const fs = require("node:fs");
@@ -756,9 +756,9 @@ BA_CONFLICT_TS="$(date +%s)"
 BA_CONFLICT_SIG="$(hmac_sha256_hex_internal "$BOT_RAW_SECRET" "${BA_CONFLICT_TS}.bot-action-result:${BA_CONFLICT_ID}:${BA_WORKER}:true")"
 BA_CONFLICT_CODE="$(curl -sS -o "$TMP_DIR/ba-conflict.json" -w '%{http_code}' -X POST "$BACKEND_URL/internal/v1/bot-actions/${BA_CONFLICT_ID}/result" \
   -H "content-type: application/json" \
-  -H "x-stc-key-id: ${BOT_KEY_ID}" \
-  -H "x-stc-timestamp: ${BA_CONFLICT_TS}" \
-  -H "x-stc-signature: sha256=${BA_CONFLICT_SIG}" \
+  -H "x-sitg-key-id: ${BOT_KEY_ID}" \
+  -H "x-sitg-timestamp: ${BA_CONFLICT_TS}" \
+  -H "x-sitg-signature: sha256=${BA_CONFLICT_SIG}" \
   --data "{\"worker_id\":\"${BA_WORKER}\",\"success\":true,\"failure_reason\":null,\"retryable\":null}")"
 [[ "$BA_CONFLICT_CODE" == "409" ]] || fail "Expected bot action result conflict to return 409, got ${BA_CONFLICT_CODE}"
 

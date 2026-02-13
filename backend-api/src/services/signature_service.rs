@@ -53,7 +53,7 @@ pub fn recover_eip712_pr_confirmation_address(
       },
       "primaryType": "PRGateConfirmation",
       "domain": {
-        "name": "StakeToContribute",
+        "name": "SITG",
         "version": "1",
         "chainId": chain_id,
         "verifyingContract": verifying_contract

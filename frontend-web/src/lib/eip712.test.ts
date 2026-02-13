@@ -4,7 +4,7 @@ import { normalizeChallengeId, normalizeConfirmTypedData, normalizeNonce } from 
 describe('eip712 normalize', () => {
   it('normalizes uuid challenge id and nonce', () => {
     const normalized = normalizeConfirmTypedData({
-      domain: { name: 'StakeToContribute', version: '1', chainId: 8453, verifyingContract: '0x0000000000000000000000000000000000000000' },
+      domain: { name: 'SITG', version: '1', chainId: 8453, verifyingContract: '0x0000000000000000000000000000000000000000' },
       primary_type: 'PRGateConfirmation',
       message: {
         githubUserId: 1,

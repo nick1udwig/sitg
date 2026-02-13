@@ -11,7 +11,7 @@ export function Layout({ children }: { children: ReactNode }) {
   return (
     <>
       <header className="topbar">
-        <div className="brand">Stake-to-Contribute</div>
+        <div className="brand">SITG</div>
         <nav className="nav" aria-label="Primary">
           <Link className={location.pathname === '/' ? 'active' : ''} to="/">
             Owner Setup

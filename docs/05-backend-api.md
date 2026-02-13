@@ -20,12 +20,12 @@
 ## Internal request auth (`/internal/v1/*`)
 
 Required headers:
-- `x-stc-key-id`: bot key identifier.
-- `x-stc-timestamp`: unix epoch seconds.
-- `x-stc-signature`: `sha256=<hex_hmac_sha256(secret, "{timestamp}.{message}")>`.
+- `x-sitg-key-id`: bot key identifier.
+- `x-sitg-timestamp`: unix epoch seconds.
+- `x-sitg-signature`: `sha256=<hex_hmac_sha256(secret, "{timestamp}.{message}")>`.
 
 Rules:
-- Secret is resolved from `x-stc-key-id` (`bot_client_keys`).
+- Secret is resolved from `x-sitg-key-id` (`bot_client_keys`).
 - Timestamp skew must be within 5 minutes.
 - Signatures are single-use (replay-protected). Reusing the same signature returns `403 FORBIDDEN`.
 - Every retry attempt must generate a fresh timestamp + signature.
@@ -159,7 +159,7 @@ Create bot key response (secret shown once):
 ```json
 {
   "key_id": "bck_live_abc123",
-  "secret": "stcbs_live_...",
+  "secret": "sitgbs_live_...",
   "created_at": "2026-02-13T00:00:00Z"
 }
 ```
@@ -210,7 +210,7 @@ Response:
 ## EIP-712 contract for PR confirmation
 
 Domain:
-- `name`: `StakeToContribute`
+- `name`: `SITG`
 - `version`: `1`
 - `chainId`: `8453`
 - `verifyingContract`: staking contract address
@@ -276,7 +276,7 @@ Legacy/manual endpoint (optional):
   "decision": "REQUIRE_STAKE",
   "challenge": {
     "id": "uuid",
-    "gate_url": "https://app.example.com/g/abc",
+    "gate_url": "https://sitg.io/g/abc",
     "deadline_at": "2026-02-13T00:30:00Z",
     "comment_markdown": "Please verify stake within 30 minutes..."
   }

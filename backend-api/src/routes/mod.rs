@@ -363,7 +363,7 @@ async fn create_bot_client_key(
     ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
 
     let key_id = format!("bck_live_{}", build_token(12));
-    let secret = format!("stcbs_live_{}", build_token(40));
+    let secret = format!("sitgbs_live_{}", build_token(40));
     let stored_secret = encode_bot_secret_for_storage(&secret);
     let now = Utc::now();
 
@@ -774,7 +774,7 @@ async fn get_gate_confirm_typed_data(
 
     Ok(Json(ConfirmTypedDataResponse {
         domain: TypedDataDomain {
-            name: "StakeToContribute".to_string(),
+            name: "SITG".to_string(),
             version: "1".to_string(),
             chain_id: 8453,
             verifying_contract: state
@@ -1648,15 +1648,15 @@ async fn verify_internal_from_headers(
     message: &str,
 ) -> ApiResult<crate::services::internal_auth::InternalAuthContext> {
     let key_id = headers
-        .get("x-stc-key-id")
+        .get("x-sitg-key-id")
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Forbidden)?;
     let timestamp = headers
-        .get("x-stc-timestamp")
+        .get("x-sitg-timestamp")
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Forbidden)?;
     let signature_hex = headers
-        .get("x-stc-signature")
+        .get("x-sitg-signature")
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Forbidden)?;
     verify_internal_with_key_id(&state.pool, key_id, timestamp, signature_hex, message).await
@@ -1885,18 +1885,18 @@ mod tests {
     #[test]
     fn validates_redirect_prefix() {
         let redirect = sanitize_redirect_url(
-            Some("https://app.example.com/g/abc".to_string()),
-            "https://app.example.com",
-            "https://app.example.com",
+            Some("https://sitg.io/g/abc".to_string()),
+            "https://sitg.io",
+            "https://sitg.io",
         );
-        assert_eq!(redirect, "https://app.example.com/g/abc");
+        assert_eq!(redirect, "https://sitg.io/g/abc");
 
         let fallback = sanitize_redirect_url(
             Some("https://evil.example.com".to_string()),
-            "https://app.example.com",
-            "https://app.example.com",
+            "https://sitg.io",
+            "https://sitg.io",
         );
-        assert_eq!(fallback, "https://app.example.com");
+        assert_eq!(fallback, "https://sitg.io");
     }
 
     #[test]

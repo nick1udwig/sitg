@@ -1,6 +1,6 @@
 # frontend-web
 
-React + Vite frontend for Stake-to-Contribute MVP.
+React + Vite frontend for SITG MVP.
 
 ## Features implemented
 

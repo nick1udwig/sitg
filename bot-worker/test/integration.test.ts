@@ -79,7 +79,7 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 1000): Promise<void
 };
 
 test("webhook opened event posts gate comment based on backend REQUIRE_STAKE", async () => {
-  const tempDir = mkdtempSync(join(tmpdir(), "stc-bot-it-"));
+  const tempDir = mkdtempSync(join(tmpdir(), "sitg-bot-it-"));
   const stateFile = join(tempDir, "state.json");
   const config = makeConfig(stateFile);
   const calls: FetchCall[] = [];
@@ -96,9 +96,9 @@ test("webhook opened event posts gate comment based on backend REQUIRE_STAKE", a
 
     if (url === "http://backend.local/internal/v1/pr-events") {
       assert.equal(headers.get("authorization"), "Bearer backend-token");
-      assert.equal(headers.get("x-stc-key-id"), "bck_test_123");
-      const timestamp = headers.get("x-stc-timestamp");
-      const signature = headers.get("x-stc-signature");
+      assert.equal(headers.get("x-sitg-key-id"), "bck_test_123");
+      const timestamp = headers.get("x-sitg-timestamp");
+      const signature = headers.get("x-sitg-signature");
       assert.ok(timestamp);
       assert.ok(signature);
       const expected = buildInternalHmacSignature(
@@ -112,7 +112,7 @@ test("webhook opened event posts gate comment based on backend REQUIRE_STAKE", a
           decision: "REQUIRE_STAKE",
           challenge: {
             id: "11111111-1111-1111-1111-111111111111",
-            gate_url: "https://app.example.com/g/token",
+            gate_url: "https://sitg.io/g/token",
             deadline_at: new Date(Date.now() + 60_000).toISOString(),
             comment_markdown: "Please verify stake.",
           },
@@ -168,12 +168,12 @@ test("webhook opened event posts gate comment based on backend REQUIRE_STAKE", a
 
     const createComment = calls.find((c) => c.url === "https://api.github.com/repos/org/repo/issues/42/comments");
     assert.ok(createComment);
-    assert.match(String((createComment.body as { body: string }).body), /stake-to-contribute:gate:11111111/);
+    assert.match(String((createComment.body as { body: string }).body), /sitg:gate:11111111/);
 
     const metricsRes = await fetch(`http://127.0.0.1:${port}/metrics`);
     const metrics = await metricsRes.text();
-    assert.match(metrics, /stc_bot_webhook_events_total 1/);
-    assert.match(metrics, /stc_bot_webhook_decision_require_stake_total 1/);
+    assert.match(metrics, /sitg_bot_webhook_events_total 1/);
+    assert.match(metrics, /sitg_bot_webhook_decision_require_stake_total 1/);
   } finally {
     server.close();
     restoreFetch();
@@ -182,7 +182,7 @@ test("webhook opened event posts gate comment based on backend REQUIRE_STAKE", a
 });
 
 test("deadline run endpoint rejects invalid internal token", async () => {
-  const tempDir = mkdtempSync(join(tmpdir(), "stc-bot-it-"));
+  const tempDir = mkdtempSync(join(tmpdir(), "sitg-bot-it-"));
   const stateFile = join(tempDir, "state.json");
   const config = makeConfig(stateFile);
   const restoreFetch = installFetchMock(async () => {
@@ -207,7 +207,7 @@ test("deadline run endpoint rejects invalid internal token", async () => {
 });
 
 test("server restart recovers persisted deadlines and executes close flow", async () => {
-  const tempDir = mkdtempSync(join(tmpdir(), "stc-bot-it-"));
+  const tempDir = mkdtempSync(join(tmpdir(), "sitg-bot-it-"));
   const stateFile = join(tempDir, "state.json");
   const config = makeConfig(stateFile);
   const challengeId = "33333333-3333-3333-3333-333333333333";
@@ -302,7 +302,7 @@ test("server restart recovers persisted deadlines and executes close flow", asyn
 });
 
 test("outbox polling claims actions, executes close, and acks success", async () => {
-  const tempDir = mkdtempSync(join(tmpdir(), "stc-bot-it-"));
+  const tempDir = mkdtempSync(join(tmpdir(), "sitg-bot-it-"));
   const stateFile = join(tempDir, "state.json");
   const config = {
     ...makeConfig(stateFile),
@@ -327,9 +327,9 @@ test("outbox polling claims actions, executes close, and acks success", async ()
     calls.push({ url, method, headers, body });
 
     if (url === "http://backend.local/internal/v1/bot-actions/claim") {
-      assert.equal(headers.get("x-stc-key-id"), "bck_test_123");
-      const timestamp = headers.get("x-stc-timestamp");
-      const signature = headers.get("x-stc-signature");
+      assert.equal(headers.get("x-sitg-key-id"), "bck_test_123");
+      const timestamp = headers.get("x-sitg-timestamp");
+      const signature = headers.get("x-sitg-signature");
       assert.ok(timestamp);
       const expected = buildInternalHmacSignature(
         config.backendInternalHmacSecret,
@@ -387,7 +387,7 @@ test("outbox polling claims actions, executes close, and acks success", async ()
       return new Response(JSON.stringify({ id: 1 }), { status: 201, headers: { "content-type": "application/json" } });
     }
     if (url === "http://backend.local/internal/v1/bot-actions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/result") {
-      assert.equal(headers.get("x-stc-key-id"), "bck_test_123");
+      assert.equal(headers.get("x-sitg-key-id"), "bck_test_123");
       return new Response(JSON.stringify({ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", status: "DONE" }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -410,8 +410,8 @@ test("outbox polling claims actions, executes close, and acks success", async ()
     );
     const metricsRes = await fetch(`http://127.0.0.1:${port}/metrics`);
     const metrics = await metricsRes.text();
-    assert.match(metrics, /stc_bot_outbox_claim_total 1|stc_bot_outbox_claim_total [2-9]/);
-    assert.match(metrics, /stc_bot_outbox_actions_success_total 1/);
+    assert.match(metrics, /sitg_bot_outbox_claim_total 1|sitg_bot_outbox_claim_total [2-9]/);
+    assert.match(metrics, /sitg_bot_outbox_actions_success_total 1/);
   } finally {
     server.close();
     restoreFetch();
@@ -420,7 +420,7 @@ test("outbox polling claims actions, executes close, and acks success", async ()
 });
 
 test("deadline run closes PR and posts timeout comment from backend CLOSE_PR action", async () => {
-  const tempDir = mkdtempSync(join(tmpdir(), "stc-bot-it-"));
+  const tempDir = mkdtempSync(join(tmpdir(), "sitg-bot-it-"));
   const stateFile = join(tempDir, "state.json");
   const config = makeConfig(stateFile);
   const calls: FetchCall[] = [];
@@ -441,7 +441,7 @@ test("deadline run closes PR and posts timeout comment from backend CLOSE_PR act
           decision: "REQUIRE_STAKE",
           challenge: {
             id: "22222222-2222-2222-2222-222222222222",
-            gate_url: "https://app.example.com/g/token2",
+            gate_url: "https://sitg.io/g/token2",
             deadline_at: new Date(Date.now() + 60_000).toISOString(),
             comment_markdown: "Please verify stake.",
           },
@@ -451,9 +451,9 @@ test("deadline run closes PR and posts timeout comment from backend CLOSE_PR act
     }
     if (url === "http://backend.local/internal/v1/challenges/22222222-2222-2222-2222-222222222222/deadline-check") {
       assert.equal(headers.get("authorization"), "Bearer backend-token");
-      assert.equal(headers.get("x-stc-key-id"), "bck_test_123");
-      const timestamp = headers.get("x-stc-timestamp");
-      const signature = headers.get("x-stc-signature");
+      assert.equal(headers.get("x-sitg-key-id"), "bck_test_123");
+      const timestamp = headers.get("x-sitg-timestamp");
+      const signature = headers.get("x-sitg-signature");
       assert.ok(timestamp);
       assert.ok(signature);
       const expected = buildInternalHmacSignature(
@@ -539,7 +539,7 @@ test("deadline run closes PR and posts timeout comment from backend CLOSE_PR act
     const timeoutComment = calls.find(
       (c) =>
         c.url === "https://api.github.com/repos/org/repo/issues/42/comments" &&
-        String((c.body as { body: string }).body).includes("stake-to-contribute:timeout:22222222"),
+        String((c.body as { body: string }).body).includes("sitg:timeout:22222222"),
     );
     assert.ok(timeoutComment);
   } finally {

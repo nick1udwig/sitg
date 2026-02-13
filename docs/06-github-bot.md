@@ -26,7 +26,7 @@
 - Verify webhook signature.
 - Normalize payload and send to backend `/internal/v1/pr-events`.
 - Apply backend decision.
-- Sign backend internal requests using `x-stc-key-id`, `x-stc-timestamp`, and `x-stc-signature` HMAC.
+- Sign backend internal requests using `x-sitg-key-id`, `x-sitg-timestamp`, and `x-sitg-signature` HMAC.
 
 2. If `REQUIRE_STAKE`:
 - Post gate comment with unique gate URL and deadline.

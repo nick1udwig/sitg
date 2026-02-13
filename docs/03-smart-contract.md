@@ -18,7 +18,7 @@
 ## Interface
 
 ```solidity
-interface IStakeToContribute {
+interface ISITGStaking {
     event Staked(address indexed user, uint256 amountAdded, uint256 newBalance, uint256 unlockTime);
     event Withdrawn(address indexed user, address indexed recipient, uint256 amountWithdrawn);
 

@@ -36,9 +36,9 @@ export class BackendClient {
 
   private applyInternalAuth(headers: Headers, message: string): void {
     const timestamp = Math.floor(Date.now() / 1000);
-    headers.set("x-stc-key-id", this.botKeyId);
-    headers.set("x-stc-timestamp", String(timestamp));
-    headers.set("x-stc-signature", buildInternalHmacSignature(this.internalHmacSecret, timestamp, message));
+    headers.set("x-sitg-key-id", this.botKeyId);
+    headers.set("x-sitg-timestamp", String(timestamp));
+    headers.set("x-sitg-signature", buildInternalHmacSignature(this.internalHmacSecret, timestamp, message));
     withAuth(headers, this.serviceToken);
   }
 

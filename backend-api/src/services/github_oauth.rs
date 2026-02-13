@@ -86,7 +86,7 @@ impl GithubOAuthService {
             .client
             .get("https://api.github.com/user")
             .bearer_auth(access_token)
-            .header("User-Agent", "stake-to-contribute-backend")
+            .header("User-Agent", "sitg-backend")
             .send()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
@@ -105,7 +105,7 @@ impl GithubOAuthService {
         let response = self
             .client
             .get(format!("https://api.github.com/users/{login}"))
-            .header("User-Agent", "stake-to-contribute-backend")
+            .header("User-Agent", "sitg-backend")
             .send()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
@@ -136,7 +136,7 @@ impl GithubOAuthService {
                 "https://api.github.com/repos/{full_repo_name}/collaborators/{login}/permission"
             ))
             .bearer_auth(token)
-            .header("User-Agent", "stake-to-contribute-backend")
+            .header("User-Agent", "sitg-backend")
             .send()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;

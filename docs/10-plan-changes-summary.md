@@ -55,7 +55,7 @@ This document summarizes how the plan evolved from the initial MVP outline to th
 
 - Deployment model changed to many owner-run bot workers.
 - Internal bot auth changed from one global secret to tenant-scoped credentials:
-- `x-stc-key-id` + HMAC secret.
+- `x-sitg-key-id` + HMAC secret.
 - Backend authorizes each internal request by bot-to-installation binding.
 - Added owner-facing bot management APIs:
 - create/list bot clients,

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {StakeToContribute} from "../src/StakeToContribute.sol";
-import {IStakeToContribute} from "../src/IStakeToContribute.sol";
+import {SITGStaking} from "../src/SITGStaking.sol";
+import {ISITGStaking} from "../src/ISITGStaking.sol";
 
 address constant HEVM_ADDRESS = address(uint160(uint256(keccak256("hevm cheat code"))));
 
@@ -15,11 +15,11 @@ interface Vm {
     function warp(uint256) external;
 }
 
-contract StakeToContributeTest {
+contract SITGStakingTest {
     Vm internal constant vm = Vm(HEVM_ADDRESS);
 
     uint256 internal constant LOCK_DURATION = 30 days;
-    StakeToContribute internal staking;
+    SITGStaking internal staking;
 
     address internal alice = address(0xA11CE);
     address internal bob = address(0xB0B);
@@ -29,7 +29,7 @@ contract StakeToContributeTest {
     event Withdrawn(address indexed user, address indexed recipient, uint256 amountWithdrawn);
 
     function setUp() public {
-        staking = new StakeToContribute();
+        staking = new SITGStaking();
         vm.deal(alice, 100 ether);
         vm.deal(bob, 100 ether);
     }
@@ -40,7 +40,7 @@ contract StakeToContributeTest {
 
     function testStakeRequiresValue() public {
         vm.prank(alice);
-        vm.expectRevert(IStakeToContribute.AmountZero.selector);
+        vm.expectRevert(ISITGStaking.AmountZero.selector);
         staking.stake{value: 0}();
     }
 
@@ -93,7 +93,7 @@ contract StakeToContributeTest {
 
     function testWithdrawRequiresExistingStake() public {
         vm.prank(alice);
-        vm.expectRevert(IStakeToContribute.InsufficientBalance.selector);
+        vm.expectRevert(ISITGStaking.InsufficientBalance.selector);
         staking.withdraw();
     }
 
@@ -102,7 +102,7 @@ contract StakeToContributeTest {
         staking.stake{value: 1 ether}();
 
         vm.prank(alice);
-        vm.expectRevert(IStakeToContribute.LockActive.selector);
+        vm.expectRevert(ISITGStaking.LockActive.selector);
         staking.withdraw();
     }
 
@@ -157,7 +157,7 @@ contract StakeToContributeTest {
         staking.stake{value: 1 ether}();
 
         vm.prank(bob);
-        vm.expectRevert(IStakeToContribute.InsufficientBalance.selector);
+        vm.expectRevert(ISITGStaking.InsufficientBalance.selector);
         staking.withdraw();
     }
 
@@ -233,7 +233,7 @@ contract StakeToContributeTest {
         assertTrue(attacker.reentryAttempted(), "reentry should have been attempted");
         assertEq(
             uint256(uint32(attacker.reentryRevertSelector())),
-            uint256(uint32(IStakeToContribute.InsufficientBalance.selector)),
+            uint256(uint32(ISITGStaking.InsufficientBalance.selector)),
             "reentry should fail with insufficient balance"
         );
     }
@@ -321,11 +321,11 @@ contract StakeToContributeTest {
 }
 
 contract ReentrancyReceiver {
-    StakeToContribute internal immutable _staking;
+    SITGStaking internal immutable _staking;
     bool internal _attempted;
     bytes4 internal _selector;
 
-    constructor(StakeToContribute staking_) {
+    constructor(SITGStaking staking_) {
         _staking = staking_;
     }
 
@@ -359,9 +359,9 @@ contract ReentrancyReceiver {
 }
 
 contract RejectingReceiver {
-    StakeToContribute internal immutable _staking;
+    SITGStaking internal immutable _staking;
 
-    constructor(StakeToContribute staking_) {
+    constructor(SITGStaking staking_) {
         _staking = staking_;
     }
 

@@ -25,8 +25,8 @@ const parseRepo = (fullName: string): RepoRef => {
   return { owner, repo };
 };
 
-const buildGateMarker = (challengeId: string): string => `<!-- stake-to-contribute:gate:${challengeId} -->`;
-const buildTimeoutMarker = (challengeId: string): string => `<!-- stake-to-contribute:timeout:${challengeId} -->`;
+const buildGateMarker = (challengeId: string): string => `<!-- sitg:gate:${challengeId} -->`;
+const buildTimeoutMarker = (challengeId: string): string => `<!-- sitg:timeout:${challengeId} -->`;
 
 export class GitHubClient {
   private readonly appId: string;
@@ -177,7 +177,7 @@ export class GitHubClient {
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
       "x-github-api-version": "2022-11-28",
-      "user-agent": "stake-to-contribute-bot-worker",
+      "user-agent": "sitg-bot-worker",
     };
   }
 }
