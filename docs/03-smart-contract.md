@@ -19,11 +19,11 @@
 
 ```solidity
 interface IStakeToContribute {
-    event Staked(address indexed user, uint256 amount, uint256 newBalance, uint256 unlockTime);
-    event Withdrawn(address indexed user, uint256 amount, uint256 remainingBalance);
+    event Staked(address indexed user, uint256 amountAdded, uint256 newBalance, uint256 unlockTime);
+    event Withdrawn(address indexed user, uint256 amountWithdrawn);
 
     function stake() external payable;
-    function withdraw(uint256 amountWei) external;
+    function withdraw() external;
 
     function stakedBalance(address user) external view returns (uint256);
     function unlockTime(address user) external view returns (uint256);
@@ -35,15 +35,16 @@ interface IStakeToContribute {
 ## Behavior rules
 
 1. `stake()`
-- Requires `msg.value > 0`.
+- Requires `msg.value > 0` only if caller has zero staked balance.
 - Adds `msg.value` to caller balance.
 - Resets caller unlock time to `block.timestamp + LOCK_DURATION` even if caller already had stake.
+- If caller already has stake, a zero-value call is valid and acts as lock refresh only.
 
-2. `withdraw(amountWei)`
-- Requires `amountWei > 0`.
-- Requires `amountWei <= stakedBalance(msg.sender)`.
+2. `withdraw()`
+- Requires `stakedBalance(msg.sender) > 0`.
 - Requires `block.timestamp >= unlockTime(msg.sender)`.
-- Subtracts amount and transfers ETH to sender.
+- Transfers the full staked balance to sender and sets staked balance to zero.
+- Clears `unlockTime(msg.sender)` to zero after successful full withdrawal.
 
 3. `isStakeActive(user)`
 - Returns `stakedBalance(user) > 0 && block.timestamp < unlockTime(user)`.
@@ -60,4 +61,3 @@ Contributor is eligible for repo threshold iff:
 - No pause switch (unless added for emergency policy later).
 - No `extendLock()`.
 - No per-user custom lock duration.
-

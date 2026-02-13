@@ -10,6 +10,7 @@ interface Vm {
     function prank(address) external;
     function expectRevert(bytes4) external;
     function expectRevert(bytes calldata) external;
+    function expectEmit(bool, bool, bool, bool, address) external;
     function deal(address who, uint256 newBalance) external;
     function warp(uint256) external;
 }
@@ -22,6 +23,10 @@ contract StakeToContributeTest {
 
     address internal alice = address(0xA11CE);
     address internal bob = address(0xB0B);
+    address internal mallory = address(0xBEEF);
+
+    event Staked(address indexed user, uint256 amountAdded, uint256 newBalance, uint256 unlockTime);
+    event Withdrawn(address indexed user, uint256 amountWithdrawn);
 
     function setUp() public {
         staking = new StakeToContribute();
@@ -47,6 +52,8 @@ contract StakeToContributeTest {
         vm.warp(block.timestamp + 1 days);
         uint256 secondTs = block.timestamp;
 
+        vm.expectEmit(true, true, true, true, address(staking));
+        emit Staked(alice, 0, 1 ether, secondTs + LOCK_DURATION);
         vm.prank(alice);
         staking.stake{value: 0}();
 
@@ -58,6 +65,8 @@ contract StakeToContributeTest {
     function testStakeSetsBalanceAndUnlockTime() public {
         uint256 beforeTs = block.timestamp;
 
+        vm.expectEmit(true, true, true, true, address(staking));
+        emit Staked(alice, 2 ether, 2 ether, beforeTs + LOCK_DURATION);
         vm.prank(alice);
         staking.stake{value: 2 ether}();
 
@@ -106,6 +115,8 @@ contract StakeToContributeTest {
 
         uint256 aliceBalanceBefore = alice.balance;
 
+        vm.expectEmit(true, true, false, false, address(staking));
+        emit Withdrawn(alice, 3 ether);
         vm.prank(alice);
         staking.withdraw();
 
@@ -168,6 +179,65 @@ contract StakeToContributeTest {
         assertFalse(staking.isStakeActive(alice), "inactive at unlock timestamp");
     }
 
+    function testFuzzStakeAddsValueAndResetsUnlock(uint96 amountWei, uint32 warpBy) public {
+        uint256 amount = uint256(amountWei % 10 ether);
+        if (amount == 0) amount = 1;
+        uint256 warpSeconds = uint256(warpBy % uint32(LOCK_DURATION - 1));
+
+        vm.prank(alice);
+        staking.stake{value: amount}();
+
+        vm.warp(block.timestamp + warpSeconds);
+        uint256 currentTs = block.timestamp;
+
+        vm.prank(alice);
+        staking.stake{value: amount}();
+
+        assertEq(staking.stakedBalance(alice), amount * 2, "fuzz balance mismatch");
+        assertEq(staking.unlockTime(alice), currentTs + LOCK_DURATION, "fuzz unlock reset mismatch");
+    }
+
+    function testFuzzWithdrawAfterUnlockWithdrawsAll(uint96 amountWei) public {
+        uint256 amount = uint256(amountWei % 25 ether);
+        if (amount == 0) amount = 1;
+
+        vm.prank(alice);
+        staking.stake{value: amount}();
+
+        vm.warp(staking.unlockTime(alice));
+        uint256 beforeBal = alice.balance;
+
+        vm.prank(alice);
+        staking.withdraw();
+
+        assertEq(staking.stakedBalance(alice), 0, "fuzz withdraw should clear balance");
+        assertEq(staking.unlockTime(alice), 0, "fuzz withdraw should clear unlock");
+        assertEq(alice.balance, beforeBal + amount, "fuzz withdraw amount mismatch");
+    }
+
+    function testReentrancyAttemptOnWithdrawDoesNotDrainMore() public {
+        ReentrancyReceiver attacker = new ReentrancyReceiver(staking);
+        vm.deal(mallory, 5 ether);
+
+        vm.prank(mallory);
+        attacker.stakeOnTarget{value: 1 ether}();
+
+        vm.warp(staking.unlockTime(address(attacker)));
+        uint256 before = address(attacker).balance;
+
+        vm.prank(mallory);
+        attacker.withdrawFromTarget();
+
+        assertEq(staking.stakedBalance(address(attacker)), 0, "attacker stake should be zero");
+        assertEq(address(attacker).balance, before + 1 ether, "attacker should receive exactly staked amount");
+        assertTrue(attacker.reentryAttempted(), "reentry should have been attempted");
+        assertEq(
+            uint256(uint32(attacker.reentryRevertSelector())),
+            uint256(uint32(IStakeToContribute.InsufficientBalance.selector)),
+            "reentry should fail with insufficient balance"
+        );
+    }
+
     function assertEq(uint256 a, uint256 b, string memory err) internal pure {
         require(a == b, err);
     }
@@ -178,5 +248,43 @@ contract StakeToContributeTest {
 
     function assertFalse(bool v, string memory err) internal pure {
         require(!v, err);
+    }
+}
+
+contract ReentrancyReceiver {
+    StakeToContribute internal immutable _staking;
+    bool internal _attempted;
+    bytes4 internal _selector;
+
+    constructor(StakeToContribute staking_) {
+        _staking = staking_;
+    }
+
+    receive() external payable {
+        if (_attempted) return;
+        _attempted = true;
+        try _staking.withdraw() {
+            _selector = bytes4(0);
+        } catch (bytes memory reason) {
+            if (reason.length >= 4) {
+                _selector = bytes4(reason);
+            }
+        }
+    }
+
+    function stakeOnTarget() external payable {
+        _staking.stake{value: msg.value}();
+    }
+
+    function withdrawFromTarget() external {
+        _staking.withdraw();
+    }
+
+    function reentryAttempted() external view returns (bool) {
+        return _attempted;
+    }
+
+    function reentryRevertSelector() external view returns (bytes4) {
+        return _selector;
     }
 }

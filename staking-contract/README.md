@@ -12,6 +12,8 @@ Behavior implemented:
 - Staking always sets unlock to `block.timestamp + 30 days` (never additive beyond one lock window).
 - `withdraw()` (no args) requires balance and elapsed lock, then withdraws the full staked amount.
 - `isStakeActive(user)` is `balance > 0 && block.timestamp < unlockTime`.
+- `Staked(user, amountAdded, newBalance, unlockTime)` emits for both funded stake and zero-value lock refresh.
+- `Withdrawn(user, amountWithdrawn)` emits on full withdraw.
 
 ## Tests
 
@@ -24,3 +26,29 @@ forge test -vv
 ```
 
 If your environment is offline, pre-install a compatible `solc` version in Foundry before running tests.
+
+## Deploy
+
+Set environment variables:
+
+```bash
+export PRIVATE_KEY=0x...
+export BASE_SEPOLIA_RPC_URL=https://...
+export BASE_MAINNET_RPC_URL=https://...
+```
+
+Deploy to Base Sepolia:
+
+```bash
+forge script script/DeployStakeToContribute.s.sol:DeployStakeToContributeScript \
+  --rpc-url $BASE_SEPOLIA_RPC_URL \
+  --broadcast
+```
+
+Deploy to Base mainnet:
+
+```bash
+forge script script/DeployStakeToContribute.s.sol:DeployStakeToContributeScript \
+  --rpc-url $BASE_MAINNET_RPC_URL \
+  --broadcast
+```
