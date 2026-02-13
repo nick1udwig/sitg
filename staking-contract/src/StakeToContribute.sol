@@ -5,6 +5,7 @@ import {IStakeToContribute} from "./IStakeToContribute.sol";
 
 contract StakeToContribute is IStakeToContribute {
     uint256 private immutable _lockDuration;
+    uint256 private _totalStaked;
     mapping(address => uint256) private _stakedBalance;
     mapping(address => uint256) private _unlockTime;
 
@@ -19,6 +20,7 @@ contract StakeToContribute is IStakeToContribute {
         uint256 newBalance = currentBalance + msg.value;
         uint256 userUnlockTime = block.timestamp + _lockDuration;
 
+        _totalStaked += msg.value;
         _stakedBalance[msg.sender] = newBalance;
         _unlockTime[msg.sender] = userUnlockTime;
 
@@ -26,14 +28,21 @@ contract StakeToContribute is IStakeToContribute {
     }
 
     function withdraw() external {
+        withdrawTo(payable(msg.sender));
+    }
+
+    function withdrawTo(address payable recipient) public {
+        if (recipient == address(0)) revert InvalidRecipient();
+
         uint256 currentBalance = _stakedBalance[msg.sender];
         if (currentBalance == 0) revert InsufficientBalance();
         if (block.timestamp < _unlockTime[msg.sender]) revert LockActive();
 
+        _totalStaked -= currentBalance;
         _stakedBalance[msg.sender] = 0;
         _unlockTime[msg.sender] = 0;
 
-        (bool ok, ) = payable(msg.sender).call{value: currentBalance}("");
+        (bool ok, ) = recipient.call{value: currentBalance}("");
         if (!ok) revert EthTransferFailed();
 
         emit Withdrawn(msg.sender, currentBalance);
@@ -53,5 +62,13 @@ contract StakeToContribute is IStakeToContribute {
 
     function isStakeActive(address user) external view returns (bool) {
         return _stakedBalance[user] > 0 && block.timestamp < _unlockTime[user];
+    }
+
+    function totalStaked() external view returns (uint256) {
+        return _totalStaked;
+    }
+
+    function excessBalance() external view returns (uint256) {
+        return address(this).balance - _totalStaked;
     }
 }

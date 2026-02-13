@@ -238,6 +238,67 @@ contract StakeToContributeTest {
         );
     }
 
+    function testWithdrawToAllowsRecoveryForNonPayableStaker() public {
+        RejectingReceiver stuck = new RejectingReceiver(staking);
+        vm.deal(mallory, 5 ether);
+
+        vm.prank(mallory);
+        stuck.stakeOnTarget{value: 1 ether}();
+
+        uint256 unlockTs = staking.unlockTime(address(stuck));
+        vm.warp(unlockTs);
+        uint256 aliceBefore = alice.balance;
+
+        vm.prank(mallory);
+        stuck.withdrawToFromTarget(payable(alice));
+
+        assertEq(staking.stakedBalance(address(stuck)), 0, "stake should clear after withdrawTo");
+        assertEq(staking.unlockTime(address(stuck)), 0, "unlock should clear after withdrawTo");
+        assertEq(alice.balance, aliceBefore + 1 ether, "recipient should receive full withdrawn amount");
+    }
+
+    function testForcedEthIsTrackedAsExcessBalance() public {
+        vm.prank(alice);
+        staking.stake{value: 2 ether}();
+        vm.prank(bob);
+        staking.stake{value: 1 ether}();
+
+        uint256 totalStakedBefore = readUintView(address(staking), "totalStaked()");
+        uint256 excessBefore = readUintView(address(staking), "excessBalance()");
+
+        assertEq(totalStakedBefore, 3 ether, "total staked precondition mismatch");
+        assertEq(excessBefore, 0, "excess should be zero before forced ETH");
+
+        ForceEtherSender injector = new ForceEtherSender{value: 1 ether}();
+        injector.destroyAndSend(payable(address(staking)));
+
+        uint256 totalStakedAfter = readUintView(address(staking), "totalStaked()");
+        uint256 excessAfter = readUintView(address(staking), "excessBalance()");
+
+        assertEq(totalStakedAfter, 3 ether, "forced ETH must not change tracked stake");
+        assertEq(excessAfter, 1 ether, "forced ETH should appear as excess balance");
+    }
+
+    function testAccountingViewsRemainConsistentAfterWithdraw() public {
+        vm.prank(alice);
+        staking.stake{value: 2 ether}();
+        vm.prank(bob);
+        staking.stake{value: 1 ether}();
+
+        ForceEtherSender injector = new ForceEtherSender{value: 2 ether}();
+        injector.destroyAndSend(payable(address(staking)));
+
+        vm.warp(staking.unlockTime(alice));
+        vm.prank(alice);
+        staking.withdraw();
+
+        uint256 totalStakedAfter = readUintView(address(staking), "totalStaked()");
+        uint256 excessAfter = readUintView(address(staking), "excessBalance()");
+
+        assertEq(totalStakedAfter, 1 ether, "tracked stake should reduce after withdrawal");
+        assertEq(excessAfter, 2 ether, "excess should remain unchanged by user withdrawal");
+    }
+
     function assertEq(uint256 a, uint256 b, string memory err) internal pure {
         require(a == b, err);
     }
@@ -248,6 +309,12 @@ contract StakeToContributeTest {
 
     function assertFalse(bool v, string memory err) internal pure {
         require(!v, err);
+    }
+
+    function readUintView(address target, string memory signature) internal view returns (uint256) {
+        (bool ok, bytes memory data) = target.staticcall(abi.encodeWithSignature(signature));
+        require(ok, "missing accounting view");
+        return abi.decode(data, (uint256));
     }
 }
 
@@ -286,5 +353,38 @@ contract ReentrancyReceiver {
 
     function reentryRevertSelector() external view returns (bytes4) {
         return _selector;
+    }
+}
+
+contract RejectingReceiver {
+    StakeToContribute internal immutable _staking;
+
+    constructor(StakeToContribute staking_) {
+        _staking = staking_;
+    }
+
+    receive() external payable {
+        revert("reject ETH");
+    }
+
+    function stakeOnTarget() external payable {
+        _staking.stake{value: msg.value}();
+    }
+
+    function withdrawFromTarget() external {
+        _staking.withdraw();
+    }
+
+    function withdrawToFromTarget(address payable recipient) external {
+        (bool ok, ) = address(_staking).call(abi.encodeWithSignature("withdrawTo(address)", recipient));
+        require(ok, "withdrawTo failed");
+    }
+}
+
+contract ForceEtherSender {
+    constructor() payable {}
+
+    function destroyAndSend(address payable target) external {
+        selfdestruct(target);
     }
 }

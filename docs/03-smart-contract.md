@@ -24,11 +24,14 @@ interface IStakeToContribute {
 
     function stake() external payable;
     function withdraw() external;
+    function withdrawTo(address payable recipient) external;
 
     function stakedBalance(address user) external view returns (uint256);
     function unlockTime(address user) external view returns (uint256);
     function lockDuration() external view returns (uint256);
     function isStakeActive(address user) external view returns (bool);
+    function totalStaked() external view returns (uint256);
+    function excessBalance() external view returns (uint256);
 }
 ```
 
@@ -46,14 +49,31 @@ interface IStakeToContribute {
 - Transfers the full staked balance to sender and sets staked balance to zero.
 - Clears `unlockTime(msg.sender)` to zero after successful full withdrawal.
 
-3. `isStakeActive(user)`
+3. `withdrawTo(recipient)`
+- Same checks/state updates as `withdraw()` for the caller's stake.
+- Transfers full caller stake to `recipient`.
+- `recipient` must be non-zero.
+
+4. `isStakeActive(user)`
 - Returns `stakedBalance(user) > 0 && block.timestamp < unlockTime(user)`.
+
+5. Accounting views
+- `totalStaked()` tracks the sum of user-owned stake as maintained by contract state.
+- `excessBalance()` is `address(this).balance - totalStaked()`.
 
 ## Eligibility rule used by backend
 
 Contributor is eligible for repo threshold iff:
 - `stakedBalance(wallet) >= thresholdWei`, and
 - `block.timestamp < unlockTime(wallet)`.
+
+`stakedBalance(wallet)` is the sole source of truth for stake ownership and eligibility checks.
+
+## Forced ETH behavior
+
+- ETH can be forced into the contract balance (e.g., `selfdestruct`) without touching user stake mappings.
+- This can make `address(this).balance` greater than `totalStaked()`.
+- Such excess ETH is not attributed to any staker, does not increase eligibility, and is treated as unrecoverable donation in this immutable/no-admin design.
 
 ## Explicit exclusions
 
