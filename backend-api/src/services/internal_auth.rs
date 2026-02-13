@@ -85,15 +85,14 @@ pub fn encode_bot_secret_for_storage(raw_secret: &str) -> String {
 }
 
 fn decode_hmac_key(stored_secret: &str) -> ApiResult<Vec<u8>> {
-    if let Some(hex_key) = stored_secret.strip_prefix("sha256:") {
-        let bytes = hex::decode(hex_key).map_err(|_| ApiError::Forbidden)?;
-        if bytes.len() != 32 {
-            return Err(ApiError::Forbidden);
-        }
-        Ok(bytes)
-    } else {
-        Ok(stored_secret.as_bytes().to_vec())
+    let hex_key = stored_secret
+        .strip_prefix("sha256:")
+        .ok_or(ApiError::Forbidden)?;
+    let bytes = hex::decode(hex_key).map_err(|_| ApiError::Forbidden)?;
+    if bytes.len() != 32 {
+        return Err(ApiError::Forbidden);
     }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -112,18 +111,6 @@ mod tests {
         let signature = mac.finalize().into_bytes();
 
         verify_hmac(&secret, timestamp, message, signature.as_slice()).expect("valid");
-    }
-
-    #[test]
-    fn verifies_hmac_payload_with_legacy_plaintext_storage() {
-        let secret = "legacy-plaintext-secret";
-        let timestamp = Utc::now().timestamp();
-        let message = "abc";
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac");
-        mac.update(format!("{timestamp}.{message}").as_bytes());
-        let signature = mac.finalize().into_bytes();
-
-        verify_hmac(secret, timestamp, message, signature.as_slice()).expect("valid");
     }
 }
 
