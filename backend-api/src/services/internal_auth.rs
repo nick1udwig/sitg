@@ -1,6 +1,6 @@
 use chrono::Utc;
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -50,8 +50,8 @@ pub async fn verify_internal_request(
     .fetch_optional(pool)
     .await?;
 
-    let (bot_client_id, hmac_secret) = row.ok_or(ApiError::Forbidden)?;
-    verify_hmac(&hmac_secret, timestamp, message, &signature)?;
+    let (bot_client_id, stored_secret) = row.ok_or(ApiError::Forbidden)?;
+    verify_hmac(&stored_secret, timestamp, message, &signature)?;
 
     sqlx::query("update bot_client_keys set last_used_at = $2 where key_id = $1")
         .bind(key_id)
@@ -67,10 +67,33 @@ pub async fn verify_internal_request(
     })
 }
 
-fn verify_hmac(secret: &str, timestamp: i64, message: &str, signature: &[u8]) -> ApiResult<()> {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| ApiError::Forbidden)?;
+fn verify_hmac(
+    stored_secret: &str,
+    timestamp: i64,
+    message: &str,
+    signature: &[u8],
+) -> ApiResult<()> {
+    let key = decode_hmac_key(stored_secret)?;
+    let mut mac = HmacSha256::new_from_slice(&key).map_err(|_| ApiError::Forbidden)?;
     mac.update(format!("{timestamp}.{message}").as_bytes());
     mac.verify_slice(signature).map_err(|_| ApiError::Forbidden)
+}
+
+pub fn encode_bot_secret_for_storage(raw_secret: &str) -> String {
+    let digest = Sha256::digest(raw_secret.as_bytes());
+    format!("sha256:{}", hex::encode(digest))
+}
+
+fn decode_hmac_key(stored_secret: &str) -> ApiResult<Vec<u8>> {
+    if let Some(hex_key) = stored_secret.strip_prefix("sha256:") {
+        let bytes = hex::decode(hex_key).map_err(|_| ApiError::Forbidden)?;
+        if bytes.len() != 32 {
+            return Err(ApiError::Forbidden);
+        }
+        Ok(bytes)
+    } else {
+        Ok(stored_secret.as_bytes().to_vec())
+    }
 }
 
 #[cfg(test)]
@@ -78,8 +101,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verifies_hmac_payload() {
-        let secret = "topsecret";
+    fn verifies_hmac_payload_with_hashed_storage() {
+        let raw_secret = "topsecret";
+        let secret = encode_bot_secret_for_storage(raw_secret);
+        let timestamp = Utc::now().timestamp();
+        let message = "abc";
+        let key = decode_hmac_key(&secret).expect("key");
+        let mut mac = HmacSha256::new_from_slice(&key).expect("hmac");
+        mac.update(format!("{timestamp}.{message}").as_bytes());
+        let signature = mac.finalize().into_bytes();
+
+        verify_hmac(&secret, timestamp, message, signature.as_slice()).expect("valid");
+    }
+
+    #[test]
+    fn verifies_hmac_payload_with_legacy_plaintext_storage() {
+        let secret = "legacy-plaintext-secret";
         let timestamp = Utc::now().timestamp();
         let message = "abc";
         let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac");

@@ -42,7 +42,8 @@ use crate::{
         uuid_to_uint256_decimal,
     },
     services::internal_auth::{
-        ensure_installation_bound, verify_internal_request as verify_internal_with_key_id,
+        encode_bot_secret_for_storage, ensure_installation_bound,
+        verify_internal_request as verify_internal_with_key_id,
     },
 };
 
@@ -363,6 +364,7 @@ async fn create_bot_client_key(
 
     let key_id = format!("bck_live_{}", build_token(12));
     let secret = format!("stcbs_live_{}", build_token(40));
+    let stored_secret = encode_bot_secret_for_storage(&secret);
     let now = Utc::now();
 
     sqlx::query(
@@ -373,7 +375,7 @@ async fn create_bot_client_key(
     )
     .bind(&key_id)
     .bind(bot_client_id)
-    .bind(&secret)
+    .bind(&stored_secret)
     .bind(now)
     .execute(&state.pool)
     .await?;
