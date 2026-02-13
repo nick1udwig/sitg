@@ -110,6 +110,7 @@ contract StakeToContributeTest {
         staking.withdraw();
 
         assertEq(staking.stakedBalance(alice), 0, "remaining stake mismatch");
+        assertEq(staking.unlockTime(alice), 0, "unlock time should clear");
         assertEq(alice.balance, aliceBalanceBefore + 3 ether, "withdraw transfer mismatch");
     }
 

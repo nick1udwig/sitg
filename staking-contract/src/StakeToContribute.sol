@@ -31,11 +31,12 @@ contract StakeToContribute is IStakeToContribute {
         if (block.timestamp < _unlockTime[msg.sender]) revert LockActive();
 
         _stakedBalance[msg.sender] = 0;
+        _unlockTime[msg.sender] = 0;
 
         (bool ok, ) = payable(msg.sender).call{value: currentBalance}("");
         if (!ok) revert EthTransferFailed();
 
-        emit Withdrawn(msg.sender, currentBalance, 0);
+        emit Withdrawn(msg.sender, currentBalance);
     }
 
     function stakedBalance(address user) external view returns (uint256) {

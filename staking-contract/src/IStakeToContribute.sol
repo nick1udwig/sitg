@@ -7,8 +7,8 @@ interface IStakeToContribute {
     error LockActive();
     error EthTransferFailed();
 
-    event Staked(address indexed user, uint256 amount, uint256 newBalance, uint256 unlockTime);
-    event Withdrawn(address indexed user, uint256 amount, uint256 remainingBalance);
+    event Staked(address indexed user, uint256 amountAdded, uint256 newBalance, uint256 unlockTime);
+    event Withdrawn(address indexed user, uint256 amountWithdrawn);
 
     function stake() external payable;
     function withdraw() external;
