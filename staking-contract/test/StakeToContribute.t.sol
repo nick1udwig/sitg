@@ -129,6 +129,21 @@ contract StakeToContributeTest {
         assertTrue(staking.unlockTime(bob) > 0, "bob unlock missing");
     }
 
+    function testCannotWithdrawAnotherUsersStake() public {
+        vm.prank(alice);
+        staking.stake{value: 1 ether}();
+
+        vm.prank(bob);
+        vm.expectRevert(StakeToContribute.InsufficientBalance.selector);
+        staking.withdraw(1 wei);
+    }
+
+    function testNewUserHasZeroState() public view {
+        assertEq(staking.stakedBalance(bob), 0, "new user balance should be zero");
+        assertEq(staking.unlockTime(bob), 0, "new user unlock should be zero");
+        assertFalse(staking.isStakeActive(bob), "new user should be inactive");
+    }
+
     function testIsStakeActiveAtBoundary() public {
         vm.prank(alice);
         staking.stake{value: 1 ether}();
