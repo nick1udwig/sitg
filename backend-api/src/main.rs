@@ -27,6 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_connections(config.db_max_connections)
         .connect(&config.database_url)
         .await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
     let state = Arc::new(AppState::new(pool, config.clone()));
     let app = routes::router(state);
