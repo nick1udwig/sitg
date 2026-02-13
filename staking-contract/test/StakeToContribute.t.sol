@@ -102,6 +102,33 @@ contract StakeToContributeTest {
         assertEq(alice.balance, aliceBalanceBefore + 1 ether, "withdraw transfer mismatch");
     }
 
+    function testWithdrawAllClearsActiveStake() public {
+        vm.prank(alice);
+        staking.stake{value: 2 ether}();
+
+        uint256 unlockTs = staking.unlockTime(alice);
+        vm.warp(unlockTs);
+
+        vm.prank(alice);
+        staking.withdraw(2 ether);
+
+        assertEq(staking.stakedBalance(alice), 0, "balance should be zero");
+        assertFalse(staking.isStakeActive(alice), "zero balance should be inactive");
+    }
+
+    function testStakeStateIsIndependentPerUser() public {
+        vm.prank(alice);
+        staking.stake{value: 1 ether}();
+
+        vm.prank(bob);
+        staking.stake{value: 4 ether}();
+
+        assertEq(staking.stakedBalance(alice), 1 ether, "alice balance mismatch");
+        assertEq(staking.stakedBalance(bob), 4 ether, "bob balance mismatch");
+        assertTrue(staking.unlockTime(alice) > 0, "alice unlock missing");
+        assertTrue(staking.unlockTime(bob) > 0, "bob unlock missing");
+    }
+
     function testIsStakeActiveAtBoundary() public {
         vm.prank(alice);
         staking.stake{value: 1 ether}();
