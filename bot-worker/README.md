@@ -27,6 +27,8 @@ This allows restart-safe dedup and deadline recovery.
 ## Setup
 
 1. Copy `.env.example` to your environment.
+   - Set `BACKEND_INTERNAL_HMAC_SECRET` to backend `INTERNAL_HMAC_SECRET`.
+   - `BACKEND_SERVICE_TOKEN` is optional and only used if your backend also accepts bearer auth.
 2. Install dependencies:
    - `npm install`
 3. Build:

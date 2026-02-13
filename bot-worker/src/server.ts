@@ -205,6 +205,7 @@ export const createAppServer = (config: AppConfig) => {
   const backend = new BackendClient({
     baseUrl: config.backendBaseUrl,
     serviceToken: config.backendServiceToken,
+    internalHmacSecret: config.backendInternalHmacSecret,
   });
   const github = new GitHubClient({
     appId: config.githubAppId,

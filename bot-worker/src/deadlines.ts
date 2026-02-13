@@ -28,6 +28,7 @@ export class DeadlineScheduler {
         this.tasks.delete(context.challengeId);
       }
     }, delayMs);
+    timeout.unref?.();
     this.tasks.set(context.challengeId, { timeout, context });
   }
 

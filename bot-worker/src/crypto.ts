@@ -45,3 +45,9 @@ export const verifyGitHubWebhookSignature = (
 
   return timingSafeEqual(expectedBuf, providedBuf);
 };
+
+export const buildInternalHmacSignature = (secret: string, unixTimestampSeconds: number, message: string): string => {
+  const payload = `${unixTimestampSeconds}.${message}`;
+  const digest = createHmac("sha256", secret).update(payload).digest("hex");
+  return `sha256=${digest}`;
+};
