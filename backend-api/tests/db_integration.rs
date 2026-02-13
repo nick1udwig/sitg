@@ -18,6 +18,9 @@ async fn apply_migrations(pool: &PgPool) {
     pool.execute(include_str!("../migrations/0003_internal_replay_and_outbox.sql"))
         .await
         .expect("apply 0003");
+    pool.execute(include_str!("../migrations/0004_bot_action_results.sql"))
+        .await
+        .expect("apply 0004");
 }
 
 #[tokio::test]
@@ -94,4 +97,39 @@ async fn bot_actions_pending_unique_for_challenge() {
     .await;
 
     assert!(second.is_err(), "duplicate pending close action should fail");
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL postgres"]
+async fn bot_action_result_lifecycle() {
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
+    apply_migrations(&pool).await;
+
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "insert into bot_actions (id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at, claimed_by, failure_reason, attempts) values ($1, 'CLOSE_PR', null, 9, 42, '{}'::jsonb, 'CLAIMED', now(), null, now(), now(), 'worker-a', null, 1)",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .expect("insert action");
+
+    let done = sqlx::query(
+        "update bot_actions set status = 'DONE', completed_at = now(), failure_reason = null, updated_at = now() where id = $1 and status = 'CLAIMED' and claimed_by = $2",
+    )
+    .bind(id)
+    .bind("worker-a")
+    .execute(&pool)
+    .await
+    .expect("mark done");
+    assert_eq!(done.rows_affected(), 1);
+
+    let status: String = sqlx::query_scalar("select status from bot_actions where id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .expect("get status");
+    assert_eq!(status, "DONE");
 }

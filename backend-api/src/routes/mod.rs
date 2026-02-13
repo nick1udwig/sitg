@@ -27,7 +27,9 @@ use crate::{
             ConfirmTypedDataResponse, DeadlineCheckResponse, DeadlineCloseAction, GateResponse,
             InternalChallengePayload, InternalPrEventRequest, InternalPrEventResponse, MeResponse,
             RepoConfigPutRequest, RepoConfigResponse, ResolveLoginsRequest, ResolveLoginsResponse,
-            ResolvedLogin, ThresholdResponse, TypedDataDomain, TypedDataMessage, BotActionClaimRequest, BotActionClaimResponse, BotActionItem,
+            ResolvedLogin, ThresholdResponse, TypedDataDomain, TypedDataMessage,
+            BotActionClaimRequest, BotActionClaimResponse, BotActionItem, BotActionResultRequest,
+            BotActionResultResponse,
             WalletLinkChallengeResponse, WalletLinkConfirmRequest, WalletLinkConfirmResponse,
             WhitelistPutRequest,
         },
@@ -76,6 +78,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(internal_deadline_check),
         )
         .route("/internal/v1/bot-actions/claim", post(internal_bot_actions_claim))
+        .route(
+            "/internal/v1/bot-actions/{action_id}/result",
+            post(internal_bot_action_result),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
@@ -1135,7 +1141,7 @@ async fn internal_bot_actions_claim(
     let rows: Vec<BotActionRow> = sqlx::query_as(
         r#"
         update bot_actions
-        set status = 'CLAIMED', claimed_at = $2, updated_at = $2
+        set status = 'CLAIMED', claimed_at = $2, claimed_by = $3, attempts = attempts + 1, updated_at = $2
         where id in (
           select id from bot_actions
           where status = 'PENDING'
@@ -1148,6 +1154,7 @@ async fn internal_bot_actions_claim(
     )
     .bind(limit)
     .bind(Utc::now())
+    .bind(payload.worker_id)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1165,6 +1172,98 @@ async fn internal_bot_actions_claim(
         .collect();
 
     Ok(Json(BotActionClaimResponse { actions }))
+}
+
+async fn internal_bot_action_result(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(action_id): Path<Uuid>,
+    Json(payload): Json<BotActionResultRequest>,
+) -> ApiResult<Json<BotActionResultResponse>> {
+    if payload.worker_id.trim().is_empty() {
+        return Err(ApiError::validation("worker_id is required"));
+    }
+    let worker_id = payload.worker_id.clone();
+
+    let nonce_message = format!(
+        "bot-action-result:{}:{}:{}",
+        action_id, worker_id, payload.success
+    );
+    let (sig, ts) = verify_internal_request(&state, &headers, &nonce_message)?;
+    store_internal_replay(&state, &sig, ts).await?;
+
+    let now = Utc::now();
+    let status = if payload.success {
+        let updated = sqlx::query(
+            r#"
+            update bot_actions
+            set status = 'DONE', completed_at = $4, failure_reason = null, updated_at = $4
+            where id = $1 and status = 'CLAIMED' and claimed_by = $2
+            "#,
+        )
+        .bind(action_id)
+        .bind(&worker_id)
+        .bind(now)
+        .execute(&state.pool)
+        .await?;
+
+        if updated.rows_affected() == 0 {
+            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
+        }
+        "DONE".to_string()
+    } else if payload.retryable.unwrap_or(false) {
+        let updated = sqlx::query(
+            r#"
+            update bot_actions
+            set status = 'PENDING', claimed_by = null, claimed_at = null, failure_reason = $3, updated_at = $4
+            where id = $1 and status = 'CLAIMED' and claimed_by = $2
+            "#,
+        )
+        .bind(action_id)
+        .bind(&worker_id)
+        .bind(payload.failure_reason.unwrap_or_else(|| "retry requested".to_string()))
+        .bind(now)
+        .execute(&state.pool)
+        .await?;
+
+        if updated.rows_affected() == 0 {
+            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
+        }
+        "PENDING".to_string()
+    } else {
+        let updated = sqlx::query(
+            r#"
+            update bot_actions
+            set status = 'FAILED', completed_at = $4, failure_reason = $3, updated_at = $4
+            where id = $1 and status = 'CLAIMED' and claimed_by = $2
+            "#,
+        )
+        .bind(action_id)
+        .bind(&worker_id)
+        .bind(payload.failure_reason.unwrap_or_else(|| "unknown failure".to_string()))
+        .bind(now)
+        .execute(&state.pool)
+        .await?;
+
+        if updated.rows_affected() == 0 {
+            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
+        }
+        "FAILED".to_string()
+    };
+
+    insert_audit(
+        &state,
+        "BOT_ACTION_RESULT",
+        "bot_action",
+        action_id.to_string(),
+        json!({"worker_id": worker_id, "status": status}),
+    )
+    .await?;
+
+    Ok(Json(BotActionResultResponse {
+        id: action_id,
+        status,
+    }))
 }
 
 async fn queue_bot_close_action(

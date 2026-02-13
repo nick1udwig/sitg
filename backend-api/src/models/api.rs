@@ -228,3 +228,17 @@ pub struct BotActionItem {
     pub github_pr_number: i32,
     pub payload: serde_json::Value,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct BotActionResultRequest {
+    pub worker_id: String,
+    pub success: bool,
+    pub failure_reason: Option<String>,
+    pub retryable: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BotActionResultResponse {
+    pub id: Uuid,
+    pub status: String,
+}

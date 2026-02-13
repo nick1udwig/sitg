@@ -34,6 +34,7 @@ export INTERNAL_HMAC_SECRET=replace_me
 - `migrations/0001_init.sql`
 - `migrations/0002_auth_wallet.sql`
 - `migrations/0003_internal_replay_and_outbox.sql`
+- `migrations/0004_bot_action_results.sql`
 
 Note: service startup also runs embedded migrations automatically.
 
@@ -65,6 +66,7 @@ Where message is:
 - `/internal/v1/pr-events`: `delivery_id`
 - `/internal/v1/challenges/{id}/deadline-check`: `challenge_id`
 - `/internal/v1/bot-actions/claim`: `bot-actions-claim:{worker_id}`
+- `/internal/v1/bot-actions/{action_id}/result`: `bot-action-result:{action_id}:{worker_id}:{success}`
 
 Internal replay protection:
 - Signatures are single-use and persisted in `internal_request_replays`.
