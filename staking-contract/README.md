@@ -8,8 +8,9 @@ Foundry package implementing the MVP staking contract from `docs/03-smart-contra
 - `src/StakeToContribute.sol`: Minimal ETH staking implementation.
 
 Behavior implemented:
-- `stake()` requires `msg.value > 0`, accumulates balance, and resets unlock to `block.timestamp + 30 days`.
-- `withdraw(amountWei)` requires positive amount, sufficient balance, and elapsed lock.
+- `stake()` requires positive value only for first stake; existing stakers may call with `0` to refresh lock.
+- Staking always sets unlock to `block.timestamp + 30 days` (never additive beyond one lock window).
+- `withdraw()` (no args) requires balance and elapsed lock, then withdraws the full staked amount.
 - `isStakeActive(user)` is `balance > 0 && block.timestamp < unlockTime`.
 
 ## Tests

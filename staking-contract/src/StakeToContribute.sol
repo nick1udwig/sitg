@@ -4,11 +4,6 @@ pragma solidity ^0.8.24;
 import {IStakeToContribute} from "./IStakeToContribute.sol";
 
 contract StakeToContribute is IStakeToContribute {
-    error AmountZero();
-    error InsufficientBalance();
-    error LockActive();
-    error EthTransferFailed();
-
     uint256 private immutable _lockDuration;
     mapping(address => uint256) private _stakedBalance;
     mapping(address => uint256) private _unlockTime;
@@ -18,9 +13,10 @@ contract StakeToContribute is IStakeToContribute {
     }
 
     function stake() external payable {
-        if (msg.value == 0) revert AmountZero();
+        uint256 currentBalance = _stakedBalance[msg.sender];
+        if (msg.value == 0 && currentBalance == 0) revert AmountZero();
 
-        uint256 newBalance = _stakedBalance[msg.sender] + msg.value;
+        uint256 newBalance = currentBalance + msg.value;
         uint256 userUnlockTime = block.timestamp + _lockDuration;
 
         _stakedBalance[msg.sender] = newBalance;
@@ -29,20 +25,17 @@ contract StakeToContribute is IStakeToContribute {
         emit Staked(msg.sender, msg.value, newBalance, userUnlockTime);
     }
 
-    function withdraw(uint256 amountWei) external {
-        if (amountWei == 0) revert AmountZero();
-
+    function withdraw() external {
         uint256 currentBalance = _stakedBalance[msg.sender];
-        if (amountWei > currentBalance) revert InsufficientBalance();
+        if (currentBalance == 0) revert InsufficientBalance();
         if (block.timestamp < _unlockTime[msg.sender]) revert LockActive();
 
-        uint256 remaining = currentBalance - amountWei;
-        _stakedBalance[msg.sender] = remaining;
+        _stakedBalance[msg.sender] = 0;
 
-        (bool ok, ) = payable(msg.sender).call{value: amountWei}("");
+        (bool ok, ) = payable(msg.sender).call{value: currentBalance}("");
         if (!ok) revert EthTransferFailed();
 
-        emit Withdrawn(msg.sender, amountWei, remaining);
+        emit Withdrawn(msg.sender, currentBalance, 0);
     }
 
     function stakedBalance(address user) external view returns (uint256) {

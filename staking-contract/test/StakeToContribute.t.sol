@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {StakeToContribute} from "../src/StakeToContribute.sol";
+import {IStakeToContribute} from "../src/IStakeToContribute.sol";
 
 address constant HEVM_ADDRESS = address(uint160(uint256(keccak256("hevm cheat code"))));
 
@@ -34,8 +35,24 @@ contract StakeToContributeTest {
 
     function testStakeRequiresValue() public {
         vm.prank(alice);
-        vm.expectRevert(StakeToContribute.AmountZero.selector);
+        vm.expectRevert(IStakeToContribute.AmountZero.selector);
         staking.stake{value: 0}();
+    }
+
+    function testStakeAllowsZeroIfAlreadyStaked() public {
+        vm.prank(alice);
+        staking.stake{value: 1 ether}();
+
+        uint256 firstUnlock = staking.unlockTime(alice);
+        vm.warp(block.timestamp + 1 days);
+        uint256 secondTs = block.timestamp;
+
+        vm.prank(alice);
+        staking.stake{value: 0}();
+
+        assertEq(staking.stakedBalance(alice), 1 ether, "balance should stay unchanged");
+        assertTrue(staking.unlockTime(alice) > firstUnlock, "unlock should move forward");
+        assertEq(staking.unlockTime(alice), secondTs + LOCK_DURATION, "unlock should reset to now + duration");
     }
 
     function testStakeSetsBalanceAndUnlockTime() public {
@@ -65,16 +82,10 @@ contract StakeToContributeTest {
         assertEq(staking.unlockTime(alice), secondTs + LOCK_DURATION, "unlockTime should reset");
     }
 
-    function testWithdrawRequiresPositiveAmount() public {
+    function testWithdrawRequiresExistingStake() public {
         vm.prank(alice);
-        vm.expectRevert(StakeToContribute.AmountZero.selector);
-        staking.withdraw(0);
-    }
-
-    function testWithdrawRequiresSufficientBalance() public {
-        vm.prank(alice);
-        vm.expectRevert(StakeToContribute.InsufficientBalance.selector);
-        staking.withdraw(1 wei);
+        vm.expectRevert(IStakeToContribute.InsufficientBalance.selector);
+        staking.withdraw();
     }
 
     function testWithdrawBlockedWhileLocked() public {
@@ -82,8 +93,8 @@ contract StakeToContributeTest {
         staking.stake{value: 1 ether}();
 
         vm.prank(alice);
-        vm.expectRevert(StakeToContribute.LockActive.selector);
-        staking.withdraw(1 wei);
+        vm.expectRevert(IStakeToContribute.LockActive.selector);
+        staking.withdraw();
     }
 
     function testWithdrawSucceedsAfterUnlock() public {
@@ -96,10 +107,10 @@ contract StakeToContributeTest {
         uint256 aliceBalanceBefore = alice.balance;
 
         vm.prank(alice);
-        staking.withdraw(1 ether);
+        staking.withdraw();
 
-        assertEq(staking.stakedBalance(alice), 2 ether, "remaining stake mismatch");
-        assertEq(alice.balance, aliceBalanceBefore + 1 ether, "withdraw transfer mismatch");
+        assertEq(staking.stakedBalance(alice), 0, "remaining stake mismatch");
+        assertEq(alice.balance, aliceBalanceBefore + 3 ether, "withdraw transfer mismatch");
     }
 
     function testWithdrawAllClearsActiveStake() public {
@@ -110,7 +121,7 @@ contract StakeToContributeTest {
         vm.warp(unlockTs);
 
         vm.prank(alice);
-        staking.withdraw(2 ether);
+        staking.withdraw();
 
         assertEq(staking.stakedBalance(alice), 0, "balance should be zero");
         assertFalse(staking.isStakeActive(alice), "zero balance should be inactive");
@@ -134,8 +145,8 @@ contract StakeToContributeTest {
         staking.stake{value: 1 ether}();
 
         vm.prank(bob);
-        vm.expectRevert(StakeToContribute.InsufficientBalance.selector);
-        staking.withdraw(1 wei);
+        vm.expectRevert(IStakeToContribute.InsufficientBalance.selector);
+        staking.withdraw();
     }
 
     function testNewUserHasZeroState() public view {
