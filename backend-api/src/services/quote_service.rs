@@ -89,7 +89,7 @@ impl QuoteService {
     async fn fetch_latest_cached(&self) -> ApiResult<QuoteSelection> {
         let cached: Option<SpotQuoteRow> = sqlx::query_as(
             r#"
-            select id, source, pair, price, fetched_at, expires_at
+            select id, source, price, fetched_at
             from spot_quotes
             where source = 'coingecko' and pair = 'ETH_USD'
             order by fetched_at desc

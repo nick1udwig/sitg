@@ -23,16 +23,8 @@ pub struct RepoConfigRow {
 pub struct SpotQuoteRow {
     pub id: Uuid,
     pub source: String,
-    pub pair: String,
     pub price: Decimal,
     pub fetched_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, FromRow)]
-pub struct WhitelistRow {
-    pub github_user_id: i64,
-    pub github_login: String,
 }
 
 #[derive(Debug, Clone, FromRow)]

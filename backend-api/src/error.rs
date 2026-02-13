@@ -15,8 +15,6 @@ pub enum ApiError {
     PriceUnavailable,
     #[error("conflict: {0}")]
     Conflict(&'static str),
-    #[error("not implemented")]
-    NotImplemented,
     #[error(transparent)]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
@@ -48,7 +46,6 @@ impl ApiError {
             ApiError::PriceUnavailable => "PRICE_UNAVAILABLE",
             ApiError::Conflict("WALLET_HAS_STAKE") => "WALLET_HAS_STAKE",
             ApiError::Conflict(_) => "CONFLICT",
-            ApiError::NotImplemented => "NOT_IMPLEMENTED",
             ApiError::Db(_) | ApiError::Internal(_) => "INTERNAL_ERROR",
         }
     }
@@ -61,7 +58,6 @@ impl ApiError {
             ApiError::Validation(_) => StatusCode::BAD_REQUEST,
             ApiError::PriceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
-            ApiError::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             ApiError::Db(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
