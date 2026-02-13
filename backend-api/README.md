@@ -17,9 +17,18 @@ export DATABASE_URL=postgres://postgres:postgres@localhost:5432/stake_to_contrib
 export HOST=0.0.0.0
 export PORT=8080
 export APP_BASE_URL=https://app.example.com
+export API_BASE_URL=http://localhost:8080
+export GITHUB_CLIENT_ID=...
+export GITHUB_CLIENT_SECRET=...
+# optional: comma-separated wallets for local unlink stake-block simulation
+export BLOCKED_UNLINK_WALLETS=0xabc...,0xdef...
 ```
 
-2. Apply SQL migration `migrations/0001_init.sql` to Postgres.
+2. Apply SQL migrations in order:
+- `migrations/0001_init.sql`
+- `migrations/0002_auth_wallet.sql`
+
+Note: service startup also runs embedded migrations automatically.
 
 3. Start server:
 

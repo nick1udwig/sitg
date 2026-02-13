@@ -3,6 +3,24 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
+pub struct AuthStartQuery {
+    pub redirect_after: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuthCallbackQuery {
+    pub code: String,
+    pub state: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MeResponse {
+    pub id: String,
+    pub github_user_id: i64,
+    pub github_login: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct RepoConfigPutRequest {
     pub input_mode: String,
     pub input_value: String,
@@ -109,6 +127,26 @@ pub struct ConfirmRequest {
 #[derive(Debug, Serialize)]
 pub struct ConfirmResponse {
     pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WalletLinkChallengeResponse {
+    pub nonce: String,
+    pub expires_at: DateTime<Utc>,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WalletLinkConfirmRequest {
+    pub nonce: String,
+    pub wallet_address: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WalletLinkConfirmResponse {
+    pub wallet_address: String,
+    pub linked: bool,
 }
 
 #[derive(Debug, Deserialize)]

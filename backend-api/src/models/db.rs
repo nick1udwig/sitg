@@ -51,6 +51,19 @@ pub struct ChallengeRow {
     pub status: String,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct CurrentUserRow {
+    pub id: Uuid,
+    pub github_user_id: i64,
+    pub github_login: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct WalletLinkChallengeRow {
+    pub nonce: Uuid,
+    pub expires_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoinGeckoPriceEnvelope {
     pub ethereum: CoinGeckoPrice,

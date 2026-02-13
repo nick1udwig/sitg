@@ -2,15 +2,17 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Redirect},
     routing::{delete, get, post, put},
 };
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{Duration, Utc};
 use rand::{Rng, distributions::Alphanumeric};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
+use time::Duration as CookieDuration;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use uuid::Uuid;
 
@@ -19,13 +21,15 @@ use crate::{
     error::{ApiError, ApiResult},
     models::{
         api::{
-            ConfirmRequest, ConfirmResponse, ConfirmTypedDataResponse, DeadlineCheckResponse,
-            DeadlineCloseAction, GateResponse, InternalChallengePayload, InternalPrEventRequest,
-            InternalPrEventResponse, RepoConfigPutRequest, RepoConfigResponse, ResolveLoginsRequest,
-            ResolveLoginsResponse, ResolvedLogin, ThresholdResponse, TypedDataDomain,
-            TypedDataMessage, WhitelistPutRequest,
+            AuthCallbackQuery, AuthStartQuery, ConfirmRequest, ConfirmResponse,
+            ConfirmTypedDataResponse, DeadlineCheckResponse, DeadlineCloseAction, GateResponse,
+            InternalChallengePayload, InternalPrEventRequest, InternalPrEventResponse, MeResponse,
+            RepoConfigPutRequest, RepoConfigResponse, ResolveLoginsRequest, ResolveLoginsResponse,
+            ResolvedLogin, ThresholdResponse, TypedDataDomain, TypedDataMessage,
+            WalletLinkChallengeResponse, WalletLinkConfirmRequest, WalletLinkConfirmResponse,
+            WhitelistPutRequest,
         },
-        db::{ChallengeRow, RepoConfigRow, WhitelistRow},
+        db::{ChallengeRow, CurrentUserRow, RepoConfigRow, WalletLinkChallengeRow, WhitelistRow},
     },
 };
 
@@ -72,26 +76,141 @@ async fn healthz() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
 }
 
-async fn auth_github_start() -> ApiResult<Json<Value>> {
-    Err(ApiError::NotImplemented)
+async fn auth_github_start(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthStartQuery>,
+) -> ApiResult<Redirect> {
+    let oauth_state = build_token(32);
+    let now = Utc::now();
+
+    sqlx::query(
+        "insert into oauth_states (id, state, expires_at, redirect_after, created_at) values ($1, $2, $3, $4, $5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&oauth_state)
+    .bind(now + Duration::minutes(10))
+    .bind(query.redirect_after)
+    .bind(now)
+    .execute(&state.pool)
+    .await?;
+
+    let url = state
+        .github_oauth_service
+        .authorize_url(&state.config, &oauth_state)?;
+    Ok(Redirect::temporary(&url))
 }
 
-async fn auth_github_callback() -> ApiResult<Json<Value>> {
-    Err(ApiError::NotImplemented)
+async fn auth_github_callback(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthCallbackQuery>,
+    jar: CookieJar,
+) -> ApiResult<(CookieJar, Redirect)> {
+    let redirect_after: Option<String> = sqlx::query_scalar(
+        "delete from oauth_states where state = $1 and expires_at > $2 returning redirect_after",
+    )
+    .bind(&query.state)
+    .bind(Utc::now())
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if redirect_after.is_none() {
+        return Err(ApiError::validation("OAuth state is invalid or expired"));
+    }
+
+    let access_token = state
+        .github_oauth_service
+        .exchange_code_for_token(&state.config, &query.code)
+        .await?;
+    let gh_user = state.github_oauth_service.fetch_user(&access_token).await?;
+
+    let now = Utc::now();
+    let user_id = Uuid::new_v4();
+
+    let current_user_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into users (id, github_user_id, github_login, created_at, updated_at)
+        values ($1, $2, $3, $4, $4)
+        on conflict (github_user_id) do update set
+          github_login = excluded.github_login,
+          updated_at = excluded.updated_at
+        returning id
+        "#,
+    )
+    .bind(user_id)
+    .bind(gh_user.id)
+    .bind(gh_user.login)
+    .bind(now)
+    .fetch_one(&state.pool)
+    .await?;
+
+    let session_token = build_token(64);
+    sqlx::query(
+        "insert into user_sessions (id, user_id, session_token, expires_at, created_at, revoked_at) values ($1, $2, $3, $4, $5, null)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(current_user_id)
+    .bind(&session_token)
+    .bind(now + Duration::days(30))
+    .bind(now)
+    .execute(&state.pool)
+    .await?;
+
+    let cookie = Cookie::build((state.config.session_cookie_name.clone(), session_token))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(state.config.api_base_url.starts_with("https://"))
+        .max_age(CookieDuration::days(30))
+        .build();
+
+    let redirect_to = sanitize_redirect_url(
+        redirect_after,
+        &state.config.app_base_url,
+        &state.config.app_base_url,
+    );
+
+    Ok((jar.add(cookie), Redirect::temporary(&redirect_to)))
 }
 
-async fn auth_logout() -> ApiResult<StatusCode> {
-    Err(ApiError::NotImplemented)
+async fn auth_logout(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> ApiResult<(CookieJar, StatusCode)> {
+    if let Some(token) = jar.get(&state.config.session_cookie_name) {
+        sqlx::query("update user_sessions set revoked_at = $2 where session_token = $1 and revoked_at is null")
+            .bind(token.value())
+            .bind(Utc::now())
+            .execute(&state.pool)
+            .await?;
+    }
+
+    let delete_cookie = Cookie::build(state.config.session_cookie_name.clone())
+        .path("/")
+        .max_age(CookieDuration::seconds(0))
+        .build();
+
+    Ok((jar.remove(delete_cookie), StatusCode::NO_CONTENT))
 }
 
-async fn me() -> ApiResult<Json<Value>> {
-    Err(ApiError::Unauthenticated)
+async fn me(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> ApiResult<Json<MeResponse>> {
+    let user = require_current_user(&state, &jar).await?;
+    Ok(Json(MeResponse {
+        id: user.id.to_string(),
+        github_user_id: user.github_user_id,
+        github_login: user.github_login,
+    }))
 }
 
 async fn get_repo_config(
     State(state): State<Arc<AppState>>,
     Path(repo_id): Path<i64>,
+    jar: CookieJar,
 ) -> ApiResult<Json<RepoConfigResponse>> {
+    let _user = require_current_user(&state, &jar).await?;
+
     let row: Option<RepoConfigRow> = sqlx::query_as(
         r#"
         select github_repo_id, full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
@@ -111,8 +230,11 @@ async fn get_repo_config(
 async fn put_repo_config(
     State(state): State<Arc<AppState>>,
     Path(repo_id): Path<i64>,
+    jar: CookieJar,
     Json(payload): Json<RepoConfigPutRequest>,
 ) -> ApiResult<Json<RepoConfigResponse>> {
+    let _user = require_current_user(&state, &jar).await?;
+
     let input_mode = payload.input_mode.to_uppercase();
     if input_mode != "ETH" && input_mode != "USD" {
         return Err(ApiError::validation("input_mode must be ETH or USD"));
@@ -137,20 +259,18 @@ async fn put_repo_config(
 
     let threshold_wei = eth_to_wei(eth_value)?;
 
-    let full_name: Option<String> = sqlx::query_scalar(
-        "select full_name from repo_configs where github_repo_id = $1",
-    )
-    .bind(repo_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let full_name: Option<String> =
+        sqlx::query_scalar("select full_name from repo_configs where github_repo_id = $1")
+            .bind(repo_id)
+            .fetch_optional(&state.pool)
+            .await?;
 
     let full_name = full_name.unwrap_or_else(|| format!("repo/{repo_id}"));
-    let installation_id: Option<i64> = sqlx::query_scalar(
-        "select installation_id from repo_configs where github_repo_id = $1",
-    )
-    .bind(repo_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let installation_id: Option<i64> =
+        sqlx::query_scalar("select installation_id from repo_configs where github_repo_id = $1")
+            .bind(repo_id)
+            .fetch_optional(&state.pool)
+            .await?;
     let installation_id = installation_id.unwrap_or(0);
     if installation_id == 0 {
         sqlx::query(
@@ -222,8 +342,11 @@ async fn put_repo_config(
 async fn resolve_logins(
     State(state): State<Arc<AppState>>,
     Path(_repo_id): Path<i64>,
+    jar: CookieJar,
     Json(payload): Json<ResolveLoginsRequest>,
 ) -> ApiResult<Json<ResolveLoginsResponse>> {
+    let _user = require_current_user(&state, &jar).await?;
+
     if payload.logins.is_empty() {
         return Ok(Json(ResolveLoginsResponse {
             resolved: vec![],
@@ -231,12 +354,11 @@ async fn resolve_logins(
         }));
     }
 
-    let rows: Vec<WhitelistRow> = sqlx::query_as(
-        "select github_user_id, github_login from users where github_login = any($1)",
-    )
-    .bind(&payload.logins)
-    .fetch_all(&state.pool)
-    .await?;
+    let rows: Vec<WhitelistRow> =
+        sqlx::query_as("select github_user_id, github_login from users where github_login = any($1)")
+            .bind(&payload.logins)
+            .fetch_all(&state.pool)
+            .await?;
 
     let resolved: Vec<ResolvedLogin> = rows
         .iter()
@@ -261,8 +383,11 @@ async fn resolve_logins(
 async fn put_whitelist(
     State(state): State<Arc<AppState>>,
     Path(repo_id): Path<i64>,
+    jar: CookieJar,
     Json(payload): Json<WhitelistPutRequest>,
 ) -> ApiResult<StatusCode> {
+    let _user = require_current_user(&state, &jar).await?;
+
     let mut tx = state.pool.begin().await?;
 
     for entry in payload.entries {
@@ -289,7 +414,10 @@ async fn put_whitelist(
 async fn delete_whitelist_entry(
     State(state): State<Arc<AppState>>,
     Path((repo_id, github_user_id)): Path<(i64, i64)>,
+    jar: CookieJar,
 ) -> ApiResult<StatusCode> {
+    let _user = require_current_user(&state, &jar).await?;
+
     sqlx::query("delete from repo_whitelist where github_repo_id = $1 and github_user_id = $2")
         .bind(repo_id)
         .bind(github_user_id)
@@ -351,12 +479,10 @@ async fn get_gate_confirm_typed_data(
 
     let challenge = challenge.ok_or(ApiError::NotFound)?;
 
-    let nonce: Option<Uuid> = sqlx::query_scalar(
-        "select nonce from challenge_nonces where challenge_id = $1",
-    )
-    .bind(challenge.id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let nonce: Option<Uuid> = sqlx::query_scalar("select nonce from challenge_nonces where challenge_id = $1")
+        .bind(challenge.id)
+        .fetch_optional(&state.pool)
+        .await?;
 
     let nonce = nonce.ok_or(ApiError::NotFound)?;
 
@@ -426,13 +552,17 @@ async fn post_gate_confirm(
 
     let mut tx = state.pool.begin().await?;
 
-    sqlx::query(
-        "update challenge_nonces set used_at = $2 where challenge_id = $1 and used_at is null",
+    let nonce_update = sqlx::query(
+        "update challenge_nonces set used_at = $2 where challenge_id = $1 and used_at is null and expires_at > $2",
     )
     .bind(challenge.id)
     .bind(Utc::now())
     .execute(&mut *tx)
     .await?;
+
+    if nonce_update.rows_affected() == 0 {
+        return Err(ApiError::Conflict("NONCE_INVALID"));
+    }
 
     sqlx::query(
         r#"
@@ -463,16 +593,135 @@ async fn post_gate_confirm(
     }))
 }
 
-async fn wallet_link_challenge() -> ApiResult<Json<Value>> {
-    Err(ApiError::NotImplemented)
+async fn wallet_link_challenge(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> ApiResult<Json<WalletLinkChallengeResponse>> {
+    let user = require_current_user(&state, &jar).await?;
+    let now = Utc::now();
+    let nonce = Uuid::new_v4();
+    let expires_at = now + Duration::minutes(10);
+
+    sqlx::query(
+        "insert into wallet_link_challenges (id, user_id, nonce, expires_at, used_at, created_at) values ($1, $2, $3, $4, null, $5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user.id)
+    .bind(nonce)
+    .bind(expires_at)
+    .bind(now)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(Json(WalletLinkChallengeResponse {
+        nonce: nonce.to_string(),
+        expires_at,
+        message: format!(
+            "Link wallet for github_user_id={} nonce={} expires_at={}.",
+            user.github_user_id,
+            nonce,
+            expires_at.to_rfc3339()
+        ),
+    }))
 }
 
-async fn wallet_link_confirm() -> ApiResult<Json<Value>> {
-    Err(ApiError::NotImplemented)
+async fn wallet_link_confirm(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Json(payload): Json<WalletLinkConfirmRequest>,
+) -> ApiResult<Json<WalletLinkConfirmResponse>> {
+    let user = require_current_user(&state, &jar).await?;
+    if payload.signature.trim().is_empty() {
+        return Err(ApiError::validation("signature is required"));
+    }
+
+    let nonce = Uuid::parse_str(&payload.nonce)
+        .map_err(|_| ApiError::validation("nonce must be a valid UUID"))?;
+    let wallet_address = normalize_wallet_address(&payload.wallet_address)?;
+
+    let challenge: Option<WalletLinkChallengeRow> = sqlx::query_as(
+        "select nonce, expires_at from wallet_link_challenges where user_id = $1 and nonce = $2 and used_at is null and expires_at > $3",
+    )
+    .bind(user.id)
+    .bind(nonce)
+    .bind(Utc::now())
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if challenge.is_none() {
+        return Err(ApiError::Conflict("WALLET_LINK_CHALLENGE_INVALID"));
+    }
+
+    let mut tx = state.pool.begin().await?;
+
+    sqlx::query(
+        "update wallet_link_challenges set used_at = $3 where user_id = $1 and nonce = $2 and used_at is null",
+    )
+    .bind(user.id)
+    .bind(nonce)
+    .bind(Utc::now())
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("update wallet_links set unlinked_at = $2 where user_id = $1 and unlinked_at is null")
+        .bind(user.id)
+        .bind(Utc::now())
+        .execute(&mut *tx)
+        .await?;
+
+    let insert_result = sqlx::query(
+        "insert into wallet_links (id, user_id, wallet_address, chain_id, linked_at, unlinked_at) values ($1, $2, $3, 8453, $4, null)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user.id)
+    .bind(&wallet_address)
+    .bind(Utc::now())
+    .execute(&mut *tx)
+    .await;
+
+    if let Err(err) = insert_result {
+        if is_wallet_uniqueness_violation(&err) {
+            return Err(ApiError::Conflict("WALLET_ALREADY_LINKED"));
+        }
+        return Err(ApiError::Db(err));
+    }
+
+    tx.commit().await?;
+
+    Ok(Json(WalletLinkConfirmResponse {
+        wallet_address,
+        linked: true,
+    }))
 }
 
-async fn wallet_unlink() -> ApiResult<StatusCode> {
-    Err(ApiError::Conflict("WALLET_HAS_STAKE"))
+async fn wallet_unlink(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> ApiResult<StatusCode> {
+    let user = require_current_user(&state, &jar).await?;
+
+    let current_wallet: Option<String> =
+        sqlx::query_scalar("select wallet_address from wallet_links where user_id = $1 and unlinked_at is null")
+            .bind(user.id)
+            .fetch_optional(&state.pool)
+            .await?;
+
+    let Some(wallet_address) = current_wallet else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+
+    let staked = state.stake_service.staked_balance_wei(&wallet_address).await;
+    if staked > Decimal::ZERO {
+        return Err(ApiError::Conflict("WALLET_HAS_STAKE"));
+    }
+
+    sqlx::query("update wallet_links set unlinked_at = $2 where user_id = $1 and unlinked_at is null")
+        .bind(user.id)
+        .bind(Utc::now())
+        .execute(&state.pool)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn internal_pr_events(
@@ -558,7 +807,7 @@ async fn internal_pr_events(
         existing
     } else {
         let challenge_id = Uuid::new_v4();
-        let gate_token = build_gate_token();
+        let gate_token = build_token(24);
         let deadline_at = payload.event_time + Duration::minutes(30);
         let now = Utc::now();
 
@@ -680,18 +929,18 @@ async fn internal_deadline_check(
     }
 
     if challenge.status == "PENDING" {
-        sqlx::query(
-            "update pr_challenges set status = 'TIMED_OUT_CLOSED', updated_at = $2 where id = $1",
-        )
-        .bind(challenge.id)
-        .bind(Utc::now())
-        .execute(&state.pool)
-        .await?;
+        sqlx::query("update pr_challenges set status = 'TIMED_OUT_CLOSED', updated_at = $2 where id = $1")
+            .bind(challenge.id)
+            .bind(Utc::now())
+            .execute(&state.pool)
+            .await?;
 
         let close = DeadlineCloseAction {
             github_repo_id: challenge.github_repo_id,
             github_pr_number: challenge.github_pr_number,
-            comment_markdown: "Stake verification was not completed within 30 minutes, so this PR has been closed.".to_string(),
+            comment_markdown:
+                "Stake verification was not completed within 30 minutes, so this PR has been closed."
+                    .to_string(),
         };
 
         return Ok(Json(DeadlineCheckResponse {
@@ -704,6 +953,62 @@ async fn internal_deadline_check(
         action: "NOOP".to_string(),
         close: None,
     }))
+}
+
+async fn require_current_user(state: &AppState, jar: &CookieJar) -> ApiResult<CurrentUserRow> {
+    let session_cookie = jar
+        .get(&state.config.session_cookie_name)
+        .ok_or(ApiError::Unauthenticated)?;
+
+    let row: Option<CurrentUserRow> = sqlx::query_as(
+        r#"
+        select u.id, u.github_user_id, u.github_login
+        from user_sessions s
+        join users u on u.id = s.user_id
+        where s.session_token = $1 and s.revoked_at is null and s.expires_at > $2
+        "#,
+    )
+    .bind(session_cookie.value())
+    .bind(Utc::now())
+    .fetch_optional(&state.pool)
+    .await?;
+
+    row.ok_or(ApiError::Unauthenticated)
+}
+
+fn sanitize_redirect_url(
+    candidate: Option<String>,
+    allowed_prefix: &str,
+    fallback: &str,
+) -> String {
+    match candidate {
+        Some(url) if url.starts_with(allowed_prefix) => url,
+        _ => fallback.to_string(),
+    }
+}
+
+fn normalize_wallet_address(address: &str) -> ApiResult<String> {
+    let lowered = address.trim().to_lowercase();
+    let valid = lowered.len() == 42
+        && lowered.starts_with("0x")
+        && lowered.chars().skip(2).all(|c| c.is_ascii_hexdigit());
+    if valid {
+        Ok(lowered)
+    } else {
+        Err(ApiError::validation(
+            "wallet_address must be a 20-byte 0x-prefixed hex string",
+        ))
+    }
+}
+
+fn is_wallet_uniqueness_violation(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Database(db_err) => db_err
+            .constraint()
+            .map(|name| name == "wallet_links_one_active_user_per_wallet")
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 fn repo_config_row_to_response(row: &RepoConfigRow) -> RepoConfigResponse {
@@ -743,10 +1048,10 @@ fn wei_to_eth_str(wei: &Decimal) -> String {
     (wei / scale).normalize().to_string()
 }
 
-fn build_gate_token() -> String {
+fn build_token(size: usize) -> String {
     rand::thread_rng()
         .sample_iter(&Alphanumeric)
-        .take(24)
+        .take(size)
         .map(char::from)
         .collect()
 }
@@ -795,8 +1100,38 @@ mod tests {
     }
 
     #[test]
-    fn generates_gate_token_with_expected_length() {
-        let token = build_gate_token();
+    fn normalizes_wallet_address() {
+        let normalized = normalize_wallet_address("0xAbCd00000000000000000000000000000000Ef12")
+            .expect("address should parse");
+        assert_eq!(normalized, "0xabcd00000000000000000000000000000000ef12");
+    }
+
+    #[test]
+    fn rejects_invalid_wallet_address() {
+        let err = normalize_wallet_address("0x123").expect_err("should reject invalid");
+        assert!(matches!(err, ApiError::Validation(_)));
+    }
+
+    #[test]
+    fn generates_token_with_expected_length() {
+        let token = build_token(24);
         assert_eq!(token.len(), 24);
+    }
+
+    #[test]
+    fn validates_redirect_prefix() {
+        let redirect = sanitize_redirect_url(
+            Some("https://app.example.com/g/abc".to_string()),
+            "https://app.example.com",
+            "https://app.example.com",
+        );
+        assert_eq!(redirect, "https://app.example.com/g/abc");
+
+        let fallback = sanitize_redirect_url(
+            Some("https://evil.example.com".to_string()),
+            "https://app.example.com",
+            "https://app.example.com",
+        );
+        assert_eq!(fallback, "https://app.example.com");
     }
 }
