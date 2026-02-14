@@ -42,17 +42,17 @@ npm run build
 
 ### 2. Create Postgres DB/user
 
+Local Postgres over TCP (works even when there is no Linux `postgres` user):
+
 ```bash
-sudo -u postgres /opt/sitg/deploy/scripts/bootstrap-postgres.sh \
-  --db sitg \
-  --user sitg \
-  --password 'change_me'
+PGPASSWORD='postgres_admin_password' /opt/sitg/deploy/scripts/bootstrap-postgres.sh --host 127.0.0.1 --port 5432 --superuser postgres --db sitg --user sitg --password 'change_me'
 ```
 
 Notes:
 - This command is idempotent. Re-running updates role password and keeps the DB.
-- If your Postgres superuser is not `postgres`, pass `--superuser <name>`.
-- For TCP admin access, pass `--host` and `--port`.
+- If your admin role is different, change `--superuser`.
+- If you use peer auth with your current Linux user, you can omit host/port and use `--superuser "$USER"`.
+- If Postgres runs in Docker and maps to host `55432`, use `--host 127.0.0.1 --port 55432` (and matching admin password).
 
 ### 3. Configure backend env
 

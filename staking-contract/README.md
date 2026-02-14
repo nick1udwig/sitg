@@ -40,15 +40,11 @@ export BASE_MAINNET_RPC_URL=https://...
 Deploy to Base Sepolia:
 
 ```bash
-forge script script/DeploySITGStaking.s.sol:DeploySITGStakingScript \
-  --rpc-url $BASE_SEPOLIA_RPC_URL \
-  --broadcast
+forge script script/DeploySITGStaking.s.sol:DeploySITGStakingScript --rpc-url $BASE_SEPOLIA_RPC_URL --broadcast
 ```
 
 Deploy to Base mainnet:
 
 ```bash
-forge script script/DeploySITGStaking.s.sol:DeploySITGStakingScript \
-  --rpc-url $BASE_MAINNET_RPC_URL \
-  --broadcast
+forge script script/DeploySITGStaking.s.sol:DeploySITGStakingScript --rpc-url $BASE_MAINNET_RPC_URL --broadcast
 ```
