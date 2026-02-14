@@ -40,7 +40,37 @@ npm ci
 npm run build
 ```
 
-### 2. Create Postgres DB/user
+### 2. Start Postgres service
+
+System service path (recommended on single VM):
+
+```bash
+sudo apt-get update && sudo apt-get install -y postgresql postgresql-contrib
+```
+
+```bash
+sudo systemctl enable --now postgresql
+```
+
+```bash
+sudo systemctl status postgresql --no-pager
+```
+
+```bash
+ss -ltn | grep ':5432'
+```
+
+Quick-start Docker path:
+
+```bash
+sudo /opt/sitg/scripts/e2e/postgres-docker.sh up
+```
+
+```bash
+sudo /opt/sitg/scripts/e2e/postgres-docker.sh wait-ready
+```
+
+### 3. Create Postgres DB/user
 
 Local Postgres over TCP (works even when there is no Linux `postgres` user):
 
@@ -54,7 +84,7 @@ Notes:
 - If you use peer auth with your current Linux user, you can omit host/port and use `--superuser "$USER"`.
 - If Postgres runs in Docker and maps to host `55432`, use `--host 127.0.0.1 --port 55432` (and matching admin password).
 
-### 3. Configure backend env
+### 4. Configure backend env
 
 ```bash
 sudo mkdir -p /etc/sitg
@@ -73,7 +103,7 @@ Required values in `/etc/sitg/backend.env`:
 - `BASE_RPC_URL`
 - `STAKING_CONTRACT_ADDRESS`
 
-### 4. Install backend systemd service
+### 5. Install backend systemd service
 
 ```bash
 sudo cp /opt/sitg/deploy/systemd/sitg-backend.service /etc/systemd/system/
@@ -82,7 +112,7 @@ sudo systemctl enable --now sitg-backend.service
 sudo systemctl status sitg-backend.service
 ```
 
-### 5. Serve frontend + API through Caddy
+### 6. Serve frontend + API through Caddy
 
 ```bash
 sudo cp /opt/sitg/deploy/caddy/Caddyfile /etc/caddy/Caddyfile
@@ -93,7 +123,7 @@ sudo systemctl reload caddy
 
 Caddy manages TLS certificates automatically when DNS points to the host and ports `80/443` are open.
 
-### 6. Verify
+### 7. Verify
 
 ```bash
 curl -fsS https://sitg.io/healthz
