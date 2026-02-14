@@ -72,14 +72,34 @@ sudo /opt/sitg/scripts/e2e/postgres-docker.sh wait-ready
 
 ### 3. Create Postgres DB/user
 
-Local Postgres over TCP (works even when there is no Linux `postgres` user):
+System service default (peer auth on local socket, no default password):
+
+```bash
+sudo install -m 755 /opt/sitg/deploy/scripts/bootstrap-postgres.sh /usr/local/bin/sitg-bootstrap-postgres
+```
+
+```bash
+sudo -u postgres /usr/local/bin/sitg-bootstrap-postgres --superuser postgres --db sitg --user sitg --password 'change_me'
+```
+
+If using TCP/password auth on local Postgres:
 
 ```bash
 PGPASSWORD='postgres_admin_password' /opt/sitg/deploy/scripts/bootstrap-postgres.sh --host 127.0.0.1 --port 5432 --superuser postgres --db sitg --user sitg --password 'change_me'
 ```
 
+If using the SITG Docker Postgres defaults:
+
+```bash
+PGPASSWORD='postgres' /opt/sitg/deploy/scripts/bootstrap-postgres.sh --host 127.0.0.1 --port 55432 --superuser postgres --db sitg --user sitg --password 'change_me'
+```
+
 Notes:
 - This command is idempotent. Re-running updates role password and keeps the DB.
+- System service installs usually create DB role `postgres` with no default password (peer auth by OS user).
+- SITG Docker defaults are DB user `postgres`, password `postgres`, DB `sitg`, host port `55432`.
+- If you see `sudo: unable to execute ... Permission denied`, your script path is not traversable/readable by Linux user `postgres` (common under `/root/...`); use the `/usr/local/bin` install step above.
+- Replace `postgres_admin_password` with your actual admin password (it is a placeholder).
 - If your admin role is different, change `--superuser`.
 - If you use peer auth with your current Linux user, you can omit host/port and use `--superuser "$USER"`.
 - If Postgres runs in Docker and maps to host `55432`, use `--host 127.0.0.1 --port 55432` (and matching admin password).

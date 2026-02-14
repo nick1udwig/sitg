@@ -23,7 +23,9 @@ Options:
   -h, --help            Show this help
 
 Examples:
+  sudo -u postgres ./deploy/scripts/bootstrap-postgres.sh --superuser postgres --password 'change_me'
   PGPASSWORD='postgres_admin_password' ./deploy/scripts/bootstrap-postgres.sh --host 127.0.0.1 --port 5432 --superuser postgres --password 'change_me'
+  PGPASSWORD='postgres' ./deploy/scripts/bootstrap-postgres.sh --host 127.0.0.1 --port 55432 --superuser postgres --password 'change_me'
   ./deploy/scripts/bootstrap-postgres.sh --superuser "$USER" --password 'change_me'
 EOF
 }
