@@ -1,6 +1,9 @@
 use serde::Deserialize;
 
-use crate::{config::Config, error::{ApiError, ApiResult}};
+use crate::{
+    config::Config,
+    error::{ApiError, ApiResult},
+};
 
 #[derive(Clone)]
 pub struct GithubOAuthService {
@@ -37,16 +40,13 @@ impl GithubOAuthService {
             .ok_or_else(|| ApiError::validation("GITHUB_CLIENT_ID is not configured"))?;
         let redirect_uri = format!("{}/api/v1/auth/github/callback", config.api_base_url);
         let encoded_redirect = urlencoding::encode(&redirect_uri);
+        let encoded_scope = urlencoding::encode("read:user public_repo");
         Ok(format!(
-            "https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={encoded_redirect}&scope=read:user&state={state}"
+            "https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={encoded_redirect}&scope={encoded_scope}&state={state}"
         ))
     }
 
-    pub async fn exchange_code_for_token(
-        &self,
-        config: &Config,
-        code: &str,
-    ) -> ApiResult<String> {
+    pub async fn exchange_code_for_token(&self, config: &Config, code: &str) -> ApiResult<String> {
         let client_id = config
             .github_client_id
             .as_deref()

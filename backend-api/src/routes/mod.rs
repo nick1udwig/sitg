@@ -178,7 +178,7 @@ async fn auth_github_callback(
     .fetch_one(&state.pool)
     .await?;
 
-    sqlx::query("update user_sessions set revoked_at = $2 where user_id = $1 and revoked_at is null")
+    sqlx::query("update user_sessions set revoked_at = $2, github_access_token = null where user_id = $1 and revoked_at is null")
         .bind(current_user_id)
         .bind(now)
         .execute(&state.pool)
@@ -186,11 +186,12 @@ async fn auth_github_callback(
 
     let session_token = build_token(64);
     sqlx::query(
-        "insert into user_sessions (id, user_id, session_token, expires_at, created_at, revoked_at) values ($1, $2, $3, $4, $5, null)",
+        "insert into user_sessions (id, user_id, session_token, github_access_token, expires_at, created_at, revoked_at) values ($1, $2, $3, $4, $5, $6, null)",
     )
     .bind(Uuid::new_v4())
     .bind(current_user_id)
     .bind(&session_token)
+    .bind(&access_token)
     .bind(now + Duration::days(30))
     .bind(now)
     .execute(&state.pool)
@@ -227,7 +228,7 @@ async fn auth_logout(
     jar: CookieJar,
 ) -> ApiResult<(CookieJar, StatusCode)> {
     if let Some(token) = jar.get(&state.config.session_cookie_name) {
-        sqlx::query("update user_sessions set revoked_at = $2 where session_token = $1 and revoked_at is null")
+        sqlx::query("update user_sessions set revoked_at = $2, github_access_token = null where session_token = $1 and revoked_at is null")
             .bind(token.value())
             .bind(Utc::now())
             .execute(&state.pool)
@@ -1581,7 +1582,7 @@ async fn require_current_user(state: &AppState, jar: &CookieJar) -> ApiResult<Cu
 
     let row: Option<CurrentUserRow> = sqlx::query_as(
         r#"
-        select u.id, u.github_user_id, u.github_login
+        select u.id, u.github_user_id, u.github_login, s.github_access_token
         from user_sessions s
         join users u on u.id = s.user_id
         where s.session_token = $1 and s.revoked_at is null and s.expires_at > $2
@@ -1607,11 +1608,10 @@ async fn require_repo_owner(
             .fetch_optional(&state.pool)
             .await?;
     let full_name = full_name.ok_or(ApiError::NotFound)?;
-    let token = state
-        .config
-        .github_owner_check_token
+    let token = user
+        .github_access_token
         .as_deref()
-        .ok_or_else(|| ApiError::validation("GITHUB_OWNER_CHECK_TOKEN is not configured"))?;
+        .ok_or(ApiError::Unauthenticated)?;
 
     let has_access = state
         .github_oauth_service

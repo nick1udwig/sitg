@@ -48,6 +48,7 @@ pub struct CurrentUserRow {
     pub id: Uuid,
     pub github_user_id: i64,
     pub github_login: String,
+    pub github_access_token: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]

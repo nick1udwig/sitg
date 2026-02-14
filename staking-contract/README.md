@@ -48,3 +48,5 @@ Deploy to Base mainnet:
 ```bash
 forge script script/DeploySITGStaking.s.sol:DeploySITGStakingScript --rpc-url $BASE_MAINNET_RPC_URL --broadcast
 ```
+
+Deployed on 260213 to https://basescan.org/address/0xd195Ce907655363F59283e34136aDcC36AC54e8F : https://basescan.org/address/0xd195Ce907655363F59283e34136aDcC36AC54e8F

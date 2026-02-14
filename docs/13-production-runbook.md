@@ -117,11 +117,15 @@ Required values in `/etc/sitg/backend.env`:
 - `DATABASE_URL`
 - `APP_BASE_URL` (for production: `https://sitg.io`)
 - `API_BASE_URL` (for same-origin: `https://sitg.io`)
+- GitHub OAuth callback URL must be `{API_BASE_URL}/api/v1/auth/github/callback` (example: `https://sitg.io/api/v1/auth/github/callback`).
 - `GITHUB_CLIENT_ID`
 - `GITHUB_CLIENT_SECRET`
-- `GITHUB_OWNER_CHECK_TOKEN`
 - `BASE_RPC_URL`
 - `STAKING_CONTRACT_ADDRESS`
+
+GitHub OAuth notes:
+- Backend requests OAuth scope `read:user public_repo`.
+- Repo-owner checks use each logged-in owner's OAuth token from their session.
 
 ### 5. Install backend systemd service
 

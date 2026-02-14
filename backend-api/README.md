@@ -20,9 +20,9 @@ export HOST=0.0.0.0
 export PORT=8080
 export APP_BASE_URL=https://sitg.io
 export API_BASE_URL=http://localhost:8080
+# GitHub OAuth callback URL: {API_BASE_URL}/api/v1/auth/github/callback
 export GITHUB_CLIENT_ID=...
 export GITHUB_CLIENT_SECRET=...
-export GITHUB_OWNER_CHECK_TOKEN=... # token used for repo permission checks
 export BASE_RPC_URL=https://mainnet.base.org
 export STAKING_CONTRACT_ADDRESS=0x...
 # optional: comma-separated wallets for local unlink stake-block simulation
@@ -31,12 +31,17 @@ export BLOCKED_UNLINK_WALLETS=0xabc...,0xdef...
 export INTERNAL_HMAC_SECRET=replace_me
 ```
 
+GitHub OAuth notes:
+- OAuth authorize scope includes `read:user public_repo`.
+- Repo-owner authorization checks use the logged-in user's OAuth access token from session.
+
 2. Apply SQL migrations in order:
 - `migrations/0001_init.sql`
 - `migrations/0002_auth_wallet.sql`
 - `migrations/0003_internal_replay_and_outbox.sql`
 - `migrations/0004_bot_action_results.sql`
 - `migrations/0005_bot_tenant_auth.sql`
+- `migrations/0006_user_sessions_github_access_token.sql`
 
 Note: service startup also runs embedded migrations automatically.
 

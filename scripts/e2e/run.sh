@@ -252,9 +252,9 @@ values
   ('00000000-0000-0000-0000-000000000002', 2002, 'contrib', now(), now())
 on conflict (github_user_id) do update set github_login = excluded.github_login, updated_at = now();
 
-insert into user_sessions (id, user_id, session_token, expires_at, created_at, revoked_at)
-values ('00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000002', '${CONTRIB_SESSION_TOKEN}', now() + interval '30 days', now(), null)
-on conflict (session_token) do update set user_id = excluded.user_id, expires_at = excluded.expires_at, revoked_at = null;
+insert into user_sessions (id, user_id, session_token, github_access_token, expires_at, created_at, revoked_at)
+values ('00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000002', '${CONTRIB_SESSION_TOKEN}', 'gho_e2e_contrib', now() + interval '30 days', now(), null)
+on conflict (session_token) do update set user_id = excluded.user_id, github_access_token = excluded.github_access_token, expires_at = excluded.expires_at, revoked_at = null;
 
 delete from wallet_links where user_id = '00000000-0000-0000-0000-000000000002';
 
