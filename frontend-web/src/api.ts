@@ -65,7 +65,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return undefined as T;
   }
 
-  return (await response.json()) as T;
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw makeApiError(
+      'The API returned an unexpected response. Is the backend running?',
+      response.status,
+      'BAD_RESPONSE'
+    );
+  }
 }
 
 async function requestOptional<T>(path: string, init?: RequestInit): Promise<T | null> {
@@ -83,18 +92,31 @@ async function requestOptional<T>(path: string, init?: RequestInit): Promise<T |
 export async function getMe(): Promise<MeResponse | null> {
   try {
     return await request<MeResponse>('/api/v1/me');
-  } catch (error) {
-    const apiError = error as ApiError;
-    if (apiError.code === 'UNAUTHENTICATED' || apiError.status === 401) {
-      return null;
-    }
-    throw error;
+  } catch {
+    return null;
   }
 }
 
-export function githubSignIn(redirectAfter?: string): void {
+export async function githubSignIn(redirectAfter?: string): Promise<void> {
   const redirect = redirectAfter ? `?redirect_after=${encodeURIComponent(redirectAfter)}` : '';
-  window.location.href = `${API_BASE}/api/v1/auth/github/start${redirect}`;
+  const url = `${API_BASE}/api/v1/auth/github/start${redirect}`;
+
+  const res = await fetch(url, { credentials: 'include', redirect: 'manual' });
+  if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+    window.location.href = url;
+    return;
+  }
+
+  const ct = res.headers.get('content-type') ?? '';
+  if (ct.includes('text/html')) {
+    throw makeApiError(
+      'GitHub sign-in is not available. The API is not reachable — check your deployment.',
+      res.status,
+      'SIGN_IN_UNAVAILABLE'
+    );
+  }
+
+  window.location.href = url;
 }
 
 export async function logout(): Promise<void> {

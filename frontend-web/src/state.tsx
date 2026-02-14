@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useReducer } from 'react';
 import type { ReactNode } from 'react';
+import { toUserMessage } from './lib/error-map';
 import type { MeResponse } from './types';
 
 export interface RepoSelection {
@@ -8,9 +9,12 @@ export interface RepoSelection {
 }
 
 interface Notice {
+  id: number;
   type: 'success' | 'error' | 'info';
   message: string;
 }
+
+let nextNoticeId = 0;
 
 interface AppState {
   me: MeResponse | null;
@@ -24,8 +28,8 @@ type Action =
   | { type: 'set_me'; payload: MeResponse | null }
   | { type: 'set_repo'; payload: RepoSelection }
   | { type: 'set_busy'; key: string; value: boolean }
-  | { type: 'add_notice'; payload: Notice }
-  | { type: 'dismiss_notice'; index: number }
+  | { type: 'add_notice'; payload: Omit<Notice, 'id'> }
+  | { type: 'dismiss_notice'; id: number }
   | { type: 'clear_notices' };
 
 const RECENT_REPOS_KEY = 'sitg.recentRepos';
@@ -89,10 +93,12 @@ function reducer(state: AppState, action: Action): AppState {
     }
     case 'set_busy':
       return { ...state, busy: { ...state.busy, [action.key]: action.value } };
-    case 'add_notice':
-      return { ...state, notices: [action.payload, ...state.notices].slice(0, 4) };
+    case 'add_notice': {
+      const notice: Notice = { ...action.payload, id: nextNoticeId++ };
+      return { ...state, notices: [notice, ...state.notices].slice(0, 4) };
+    }
     case 'dismiss_notice':
-      return { ...state, notices: state.notices.filter((_, idx) => idx !== action.index) };
+      return { ...state, notices: state.notices.filter((n) => n.id !== action.id) };
     case 'clear_notices':
       return { ...state, notices: [] };
     default:
@@ -107,7 +113,7 @@ interface AppStateValue {
   isBusy: (key: string) => boolean;
   runBusy: <T>(key: string, fn: () => Promise<T>) => Promise<T | null>;
   pushNotice: (type: Notice['type'], message: string) => void;
-  dismissNotice: (index: number) => void;
+  dismissNotice: (id: number) => void;
   clearNotices: () => void;
 }
 
@@ -128,8 +134,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'add_notice', payload: { type, message } });
   }, []);
 
-  const dismissNotice = useCallback((index: number) => {
-    dispatch({ type: 'dismiss_notice', index });
+  const dismissNotice = useCallback((id: number) => {
+    dispatch({ type: 'dismiss_notice', id });
   }, []);
 
   const clearNotices = useCallback(() => {
@@ -147,6 +153,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'set_busy', key, value: true });
       try {
         return await fn();
+      } catch (error) {
+        dispatch({ type: 'add_notice', payload: { type: 'error', message: toUserMessage(error) } });
+        return null;
       } finally {
         dispatch({ type: 'set_busy', key, value: false });
       }

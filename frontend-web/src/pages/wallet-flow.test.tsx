@@ -95,7 +95,7 @@ describe('WalletPage flow', () => {
 
     expect(await screen.findByText('@contrib')).toBeTruthy();
 
-    await user.click(screen.getByRole('button', { name: 'Link Connected Wallet' }));
+    await user.click(screen.getByRole('button', { name: 'Link Wallet' }));
     await waitFor(() => {
       expect(wagmiMocks.switchChainAsync).toHaveBeenCalledWith({ chainId: 8453 });
       expect(apiMocks.requestWalletLinkChallenge).toHaveBeenCalledTimes(1);
@@ -107,7 +107,7 @@ describe('WalletPage flow', () => {
       });
     });
 
-    expect(await screen.findByText('0x70997970c51812dc3a010c7d01b50e0d17dc79c8')).toBeTruthy();
+    expect(await screen.findByText('0x7099...79c8')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Unlink Wallet' }));
     await waitFor(() => {

@@ -10,7 +10,7 @@ function Harness() {
     <div>
       <button onClick={() => setRepo({ id: '1', fullName: 'org/repo' })}>set repo</button>
       <button onClick={() => pushNotice('success', 'ok')}>notice</button>
-      <button onClick={() => dismissNotice(0)}>dismiss</button>
+      <button onClick={() => { if (state.notices.length) dismissNotice(state.notices[0].id); }}>dismiss</button>
       <p data-testid="repo">{state.selectedRepo?.fullName ?? 'none'}</p>
       <p data-testid="notice-count">{state.notices.length}</p>
     </div>

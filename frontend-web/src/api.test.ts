@@ -19,10 +19,12 @@ import {
 } from './api';
 
 function mockJsonResponse(status: number, body: unknown): Response {
+  const text = JSON.stringify(body);
   return {
     ok: status >= 200 && status < 300,
     status,
-    json: async () => body
+    json: async () => body,
+    text: async () => text
   } as Response;
 }
 

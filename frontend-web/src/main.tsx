@@ -1,7 +1,7 @@
 import '@rainbow-me/rainbowkit/styles.css';
 import './styles.css';
 
-import { StrictMode, useEffect } from 'react';
+import { StrictMode, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
@@ -20,6 +20,7 @@ const queryClient = new QueryClient();
 
 function Bootstrapper({ children }: { children: ReactNode }) {
   const { setMe, pushNotice } = useAppState();
+  const didInit = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -48,11 +49,14 @@ function Bootstrapper({ children }: { children: ReactNode }) {
     window.addEventListener('error', handleError);
     window.addEventListener('unhandledrejection', handleRejection);
 
-    if (!import.meta.env.VITE_WALLETCONNECT_PROJECT_ID) {
-      pushNotice('info', 'Set VITE_WALLETCONNECT_PROJECT_ID to fully enable WalletConnect.');
-    }
-    if (!import.meta.env.VITE_GITHUB_APP_INSTALL_URL) {
-      pushNotice('info', 'Set VITE_GITHUB_APP_INSTALL_URL for owner onboarding install CTA.');
+    if (!didInit.current) {
+      didInit.current = true;
+      if (!import.meta.env.VITE_WALLETCONNECT_PROJECT_ID) {
+        pushNotice('info', 'Set VITE_WALLETCONNECT_PROJECT_ID to fully enable WalletConnect.');
+      }
+      if (!import.meta.env.VITE_GITHUB_APP_INSTALL_URL) {
+        pushNotice('info', 'Set VITE_GITHUB_APP_INSTALL_URL for owner onboarding install CTA.');
+      }
     }
 
     return () => {

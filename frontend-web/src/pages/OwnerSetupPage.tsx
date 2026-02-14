@@ -30,6 +30,12 @@ const DEFAULT_FORM: RepoConfigFormState = {
   draftPrsGated: true
 };
 
+const INSTALL_DOT: Record<string, string> = {
+  installed: 'green',
+  'not-installed': 'amber',
+  unknown: 'gray'
+};
+
 export function OwnerSetupPage() {
   const { state, setRepo, runBusy, isBusy, pushNotice } = useAppState();
   const [repoIdInput, setRepoIdInput] = useState(state.selectedRepo?.id ?? '');
@@ -81,9 +87,7 @@ export function OwnerSetupPage() {
         }
         if (clients) {
           setBotClients(clients);
-          if (clients.length && !selectedBotClientId) {
-            setSelectedBotClientId(clients[0].id);
-          }
+          setSelectedBotClientId((prev) => (prev || (clients.length ? clients[0].id : '')));
         }
       })
       .catch((error) => {
@@ -95,7 +99,7 @@ export function OwnerSetupPage() {
     return () => {
       mounted = false;
     };
-  }, [state.me, pushNotice, selectedBotClientId]);
+  }, [state.me, pushNotice]);
 
   useEffect(() => {
     if (!selectedRepo || !state.me) {
@@ -340,48 +344,67 @@ export function OwnerSetupPage() {
 
   return (
     <section className="grid two">
+      {/* ── Left column: Repository ── */}
       <article className="card">
-        <h2>Repository Setup</h2>
+        <h2>Repository</h2>
         <p className="meta">Connect GitHub, install app, pick repo, configure thresholds.</p>
 
         {!state.me ? (
           <div className="grid">
-            <button onClick={() => githubSignIn(window.location.href)} aria-label="Sign in with GitHub">
-              Sign in with GitHub
-            </button>
-            <p className="meta">Sign-in is required for owner configuration APIs.</p>
+            <button
+            disabled={isBusy('github-sign-in')}
+            onClick={() => runBusy('github-sign-in', () => githubSignIn(window.location.href))}
+            aria-label="Sign in with GitHub"
+          >
+            {isBusy('github-sign-in') ? 'Redirecting...' : 'Sign in with GitHub'}
+          </button>
+            <p className="meta" style={{ marginBottom: 0 }}>Sign-in is required for owner configuration APIs.</p>
           </div>
         ) : (
-          <div className="grid">
-            <p className="success">Authenticated as @{state.me.github_login}</p>
-            <p className="meta">Install status: {installStatus}</p>
-            <div className="row-wrap">
-              <a className="button-like" href={installUrl || '#'} target="_blank" rel="noreferrer">
-                Install GitHub App
-              </a>
-              <button className="ghost" disabled={isBusy('logout')} onClick={handleLogout}>
-                {isBusy('logout') ? 'Signing out...' : 'Sign out'}
-              </button>
+          <>
+            <div className="section-label">Authentication</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <span className="status-dot green" />
+              <span className="mono">@{state.me.github_login}</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 8 }}>
+                <span className={`status-dot ${INSTALL_DOT[installStatus]}`} />
+                <span className="meta" style={{ margin: 0 }}>{installStatus}</span>
+              </span>
+              <div className="row-wrap" style={{ marginLeft: 'auto' }}>
+                <a className="button-like" href={installUrl || '#'} target="_blank" rel="noreferrer">
+                  Install App
+                </a>
+                <button className="ghost" disabled={isBusy('logout')} onClick={handleLogout}>
+                  {isBusy('logout') ? 'Signing out...' : 'Sign out'}
+                </button>
+              </div>
             </div>
-          </div>
+          </>
         )}
 
+        <div className="section-label">Select Repository</div>
         <form onSubmit={handleSelectRepo}>
-          <label htmlFor="repo-id">GitHub Repo ID</label>
-          <input
-            id="repo-id"
-            value={repoIdInput}
-            onChange={(event) => setRepoIdInput(event.target.value)}
-            placeholder="123456"
-          />
-          <label htmlFor="repo-name">Repo full name</label>
-          <input
-            id="repo-name"
-            value={repoNameInput}
-            onChange={(event) => setRepoNameInput(event.target.value)}
-            placeholder="org/repo"
-          />
-          <div className="row-wrap">
+          <div className="form-row">
+            <label>
+              Repo ID
+              <input
+                id="repo-id"
+                value={repoIdInput}
+                onChange={(event) => setRepoIdInput(event.target.value)}
+                placeholder="123456"
+              />
+            </label>
+            <label>
+              Full name
+              <input
+                id="repo-name"
+                value={repoNameInput}
+                onChange={(event) => setRepoNameInput(event.target.value)}
+                placeholder="org/repo"
+              />
+            </label>
+          </div>
+          <div className="form-row">
             <button type="submit">Use Repository</button>
             <select
               aria-label="Owned repositories"
@@ -404,7 +427,7 @@ export function OwnerSetupPage() {
                 }
               }}
             >
-              <option value="">Owned/recent repositories</option>
+              <option value="">Owned / recent repos</option>
               {repoOptions.map((repo) => (
                 <option key={repo.id} value={String(repo.id)}>
                   {repo.full_name} ({repo.id})
@@ -418,68 +441,78 @@ export function OwnerSetupPage() {
             </select>
           </div>
         </form>
-      </article>
 
-      <article className="card">
-        <h3>Config + Whitelist</h3>
-        <p className="notice">
-          <strong>Enforcement is in ETH.</strong>
-          <br />
-          USD value is an estimate using spot price at configuration time.
-        </p>
+        <div className="section-label">Threshold Configuration</div>
 
         {loadingConfig ? <p className="skeleton" aria-label="Loading repo config" /> : null}
 
         <form onSubmit={handleSaveConfig}>
-          <label>
-            Input mode
-            <select
-              value={configForm.inputMode}
-              onChange={(event) => setConfigForm((prev) => ({ ...prev, inputMode: event.target.value as InputMode }))}
-            >
-              <option value="ETH">ETH</option>
-              <option value="USD">USD</option>
-            </select>
-          </label>
-          <label>
-            Input value
-            <input
-              required
-              value={configForm.inputValue}
-              onChange={(event) => setConfigForm((prev) => ({ ...prev, inputValue: event.target.value }))}
-            />
-          </label>
-          <label>
-            <span>Draft PRs gated</span>
-            <select
-              value={String(configForm.draftPrsGated)}
-              onChange={(event) =>
-                setConfigForm((prev) => ({ ...prev, draftPrsGated: event.target.value === 'true' }))
-              }
-            >
-              <option value="true">On</option>
-              <option value="false">Off</option>
-            </select>
-          </label>
+          <div className="form-row">
+            <label>
+              Input mode
+              <select
+                value={configForm.inputMode}
+                onChange={(event) => setConfigForm((prev) => ({ ...prev, inputMode: event.target.value as InputMode }))}
+              >
+                <option value="ETH">ETH</option>
+                <option value="USD">USD</option>
+              </select>
+            </label>
+            <label>
+              Value
+              <input
+                required
+                value={configForm.inputValue}
+                onChange={(event) => setConfigForm((prev) => ({ ...prev, inputValue: event.target.value }))}
+              />
+            </label>
+            <label>
+              Draft gated
+              <select
+                value={String(configForm.draftPrsGated)}
+                onChange={(event) =>
+                  setConfigForm((prev) => ({ ...prev, draftPrsGated: event.target.value === 'true' }))
+                }
+              >
+                <option value="true">On</option>
+                <option value="false">Off</option>
+              </select>
+            </label>
+          </div>
           <button type="submit" disabled={isBusy('save-config') || !selectedRepo || !state.me}>
             {isBusy('save-config') ? 'Saving...' : 'Save Config'}
           </button>
         </form>
+      </article>
+
+      {/* ── Right column: Config summary + Whitelist ── */}
+      <article className="card">
+        <h3>Threshold &amp; Whitelist</h3>
+
+        <div className="info-bar">
+          <strong>Enforcement is in ETH.</strong> USD value is an estimate at config time.
+        </div>
 
         <dl className="kv">
           <dt>Selected repo</dt>
-          <dd>{selectedRepo ? `${selectedRepo.fullName} (${selectedRepo.id})` : 'none'}</dd>
+          <dd>{selectedRepo ? `${selectedRepo.fullName} (${selectedRepo.id})` : <span style={{ color: 'var(--ink-soft)' }}>none</span>}</dd>
           <dt>Install status</dt>
-          <dd>{installStatus}</dd>
+          <dd>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className={`status-dot ${INSTALL_DOT[installStatus]}`} />
+              {installStatus}
+            </span>
+          </dd>
           <dt>Enforced ETH</dt>
-          <dd>{summary.enforcedEth}</dd>
+          <dd style={{ color: 'var(--accent)' }}>{summary.enforcedEth}</dd>
           <dt>USD estimate</dt>
-          <dd>{summary.usdEstimate}</dd>
+          <dd><span style={{ color: 'var(--ink-soft)' }}>{summary.usdEstimate} (estimate)</span></dd>
         </dl>
 
+        <div className="section-label">Whitelist</div>
         <form onSubmit={handleSaveWhitelist}>
           <label>
-            Whitelist logins (comma separated)
+            GitHub logins (comma separated)
             <textarea
               value={whitelistInput}
               onChange={(event) => setWhitelistInput(event.target.value)}
@@ -492,87 +525,101 @@ export function OwnerSetupPage() {
         </form>
       </article>
 
-      <article className="card">
-        <h3>Bot Client Management</h3>
+      {/* ── Bot Clients (full-width) ── */}
+      <article className="card" style={{ gridColumn: '1 / -1' }}>
+        <h3>Bot Clients</h3>
         <p className="meta">Create bot clients, issue/revoke keys, and bind installations.</p>
 
-        <form onSubmit={handleCreateBotClient}>
-          <label>
-            New bot client name
-            <input
-              value={newBotClientName}
-              onChange={(event) => setNewBotClientName(event.target.value)}
-              placeholder="acme-prod-bot"
-            />
-          </label>
-          <button type="submit" disabled={isBusy('bot-client-create') || !state.me}>
-            {isBusy('bot-client-create') ? 'Creating...' : 'Create Bot Client'}
-          </button>
-        </form>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div>
+            <div className="section-label">Create Client</div>
+            <form onSubmit={handleCreateBotClient}>
+              <label>
+                Name
+                <input
+                  value={newBotClientName}
+                  onChange={(event) => setNewBotClientName(event.target.value)}
+                  placeholder="acme-prod-bot"
+                />
+              </label>
+              <button type="submit" disabled={isBusy('bot-client-create') || !state.me}>
+                {isBusy('bot-client-create') ? 'Creating...' : 'Create Bot Client'}
+              </button>
+            </form>
 
-        <label>
-          Select bot client
-          <select
-            value={selectedBotClientId}
-            onChange={(event) => {
-              setSelectedBotClientId(event.target.value);
-              const next = botClients.find((client) => client.id === event.target.value);
-              setBindingsInput((next?.installation_ids ?? []).join(', '));
-            }}
-          >
-            <option value="">Select client</option>
-            {botClients.map((client) => (
-              <option key={client.id} value={client.id}>
-                {client.name} ({client.id})
-              </option>
-            ))}
-          </select>
-        </label>
+            <div className="section-label">Select Client</div>
+            <label>
+              Active client
+              <select
+                value={selectedBotClientId}
+                onChange={(event) => {
+                  setSelectedBotClientId(event.target.value);
+                  const next = botClients.find((client) => client.id === event.target.value);
+                  setBindingsInput((next?.installation_ids ?? []).join(', '));
+                }}
+              >
+                <option value="">Select client</option>
+                {botClients.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.name} ({client.id})
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <div className="row-wrap">
-          <button onClick={handleCreateBotKey} disabled={!selectedBotClientId || isBusy('bot-key-create')}>
-            {isBusy('bot-key-create') ? 'Creating key...' : 'Create Bot Key'}
-          </button>
+            <dl className="kv">
+              <dt>Selected bot</dt>
+              <dd>{selectedBotClient ? selectedBotClient.name : <span style={{ color: 'var(--ink-soft)' }}>none</span>}</dd>
+              <dt>Key count</dt>
+              <dd>{selectedBotClient?.keys?.length ?? 0}</dd>
+              <dt>Installations</dt>
+              <dd>{selectedBotClient?.installation_ids?.join(', ') || <span style={{ color: 'var(--ink-soft)' }}>none</span>}</dd>
+            </dl>
+          </div>
+
+          <div>
+            <div className="section-label">Keys</div>
+            <div className="row-wrap" style={{ marginBottom: 12 }}>
+              <button onClick={handleCreateBotKey} disabled={!selectedBotClientId || isBusy('bot-key-create')}>
+                {isBusy('bot-key-create') ? 'Creating...' : 'Create Key'}
+              </button>
+            </div>
+
+            {createdKeySecret ? (
+              <div className="notice" aria-live="polite" style={{ marginBottom: 12 }}>
+                <span className="meta" style={{ margin: 0 }}>Secret (shown once):</span>
+                <code className="mono" style={{ display: 'block', marginTop: 4, wordBreak: 'break-all' }}>
+                  {createdKeySecret}
+                </code>
+              </div>
+            ) : null}
+
+            <form onSubmit={handleRevokeBotKey}>
+              <label>
+                Revoke key ID
+                <input value={revokeKeyId} onChange={(event) => setRevokeKeyId(event.target.value)} placeholder="bck_live_abc123" />
+              </label>
+              <button type="submit" className="warn" disabled={!selectedBotClientId || isBusy('bot-key-revoke')}>
+                {isBusy('bot-key-revoke') ? 'Revoking...' : 'Revoke Key'}
+              </button>
+            </form>
+
+            <div className="section-label">Installation Bindings</div>
+            <form onSubmit={handleSaveBindings}>
+              <label>
+                Installation IDs (comma separated)
+                <textarea
+                  value={bindingsInput}
+                  onChange={(event) => setBindingsInput(event.target.value)}
+                  placeholder="100, 101"
+                />
+              </label>
+              <button type="submit" disabled={!selectedBotClientId || isBusy('bot-bindings-save')}>
+                {isBusy('bot-bindings-save') ? 'Saving...' : 'Save Bindings'}
+              </button>
+            </form>
+          </div>
         </div>
-
-        {createdKeySecret ? (
-          <p className="notice" aria-live="polite">
-            New bot key secret (shown once): <code>{createdKeySecret}</code>
-          </p>
-        ) : null}
-
-        <form onSubmit={handleRevokeBotKey}>
-          <label>
-            Revoke key id
-            <input value={revokeKeyId} onChange={(event) => setRevokeKeyId(event.target.value)} placeholder="bck_live_abc123" />
-          </label>
-          <button type="submit" disabled={!selectedBotClientId || isBusy('bot-key-revoke')}>
-            {isBusy('bot-key-revoke') ? 'Revoking...' : 'Revoke Key'}
-          </button>
-        </form>
-
-        <form onSubmit={handleSaveBindings}>
-          <label>
-            Installation IDs (comma separated)
-            <textarea
-              value={bindingsInput}
-              onChange={(event) => setBindingsInput(event.target.value)}
-              placeholder="100, 101"
-            />
-          </label>
-          <button type="submit" disabled={!selectedBotClientId || isBusy('bot-bindings-save')}>
-            {isBusy('bot-bindings-save') ? 'Saving...' : 'Save Installation Bindings'}
-          </button>
-        </form>
-
-        <dl className="kv">
-          <dt>Selected bot</dt>
-          <dd>{selectedBotClient ? selectedBotClient.name : 'none'}</dd>
-          <dt>Key count</dt>
-          <dd>{selectedBotClient?.keys?.length ?? 0}</dd>
-          <dt>Bound installations</dt>
-          <dd>{selectedBotClient?.installation_ids?.join(', ') || 'none'}</dd>
-        </dl>
       </article>
     </section>
   );

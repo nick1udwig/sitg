@@ -159,7 +159,7 @@ describe('GatePage confirmation flow', () => {
     renderGate('contrib');
 
     expect(await screen.findByText(/PR Stake Gate/)).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Link connected wallet' }));
+    await user.click(screen.getByRole('button', { name: 'Link' }));
 
     await waitFor(() => {
       expect(wagmiMocks.switchChainAsync).toHaveBeenCalledWith({ chainId: 8453 });
@@ -171,7 +171,7 @@ describe('GatePage confirmation flow', () => {
       });
     });
 
-    await user.click(screen.getByRole('button', { name: 'Sign PR confirmation' }));
+    await user.click(screen.getByRole('button', { name: 'Sign' }));
     await waitFor(() => {
       expect(apiMocks.getConfirmTypedData).toHaveBeenCalledWith('token-1');
       expect(wagmiMocks.signTypedDataAsync).toHaveBeenCalledTimes(1);
@@ -184,7 +184,7 @@ describe('GatePage confirmation flow', () => {
     renderGate('other-user');
 
     expect(await screen.findByText('Wrong GitHub account for this challenge.')).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Link connected wallet' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Sign PR confirmation' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Link' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Sign' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

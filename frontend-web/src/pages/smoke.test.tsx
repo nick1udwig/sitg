@@ -11,7 +11,7 @@ describe('page smoke', () => {
       </AppStateProvider>
     );
 
-    expect(screen.getByText('Repository Setup')).toBeTruthy();
+    expect(screen.getByText('Repository')).toBeTruthy();
     expect(screen.getByText('Sign in with GitHub')).toBeTruthy();
   });
 });

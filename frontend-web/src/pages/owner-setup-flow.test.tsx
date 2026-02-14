@@ -129,10 +129,10 @@ describe('OwnerSetupPage flow', () => {
     const user = userEvent.setup();
     renderPage();
 
-    await screen.findByText('Authenticated as @owner');
+    await screen.findByText('@owner');
 
-    await user.type(screen.getByLabelText('GitHub Repo ID'), '999');
-    await user.type(screen.getByLabelText('Repo full name'), 'owner/repo');
+    await user.type(screen.getByLabelText('Repo ID'), '999');
+    await user.type(screen.getByLabelText('Full name'), 'owner/repo');
     await user.click(screen.getByRole('button', { name: 'Use Repository' }));
 
     await waitFor(() => {
@@ -141,9 +141,9 @@ describe('OwnerSetupPage flow', () => {
     });
 
     await user.selectOptions(screen.getByLabelText('Input mode'), 'ETH');
-    await user.clear(screen.getByLabelText('Input value'));
-    await user.type(screen.getByLabelText('Input value'), '0.12');
-    await user.selectOptions(screen.getByLabelText('Draft PRs gated'), 'false');
+    await user.clear(screen.getByLabelText('Value'));
+    await user.type(screen.getByLabelText('Value'), '0.12');
+    await user.selectOptions(screen.getByLabelText('Draft gated'), 'false');
     await user.click(screen.getByRole('button', { name: 'Save Config' }));
 
     await waitFor(() => {
@@ -154,7 +154,7 @@ describe('OwnerSetupPage flow', () => {
       });
     });
 
-    await user.type(screen.getByLabelText('Whitelist logins (comma separated)'), 'alice, ghost');
+    await user.type(screen.getByLabelText('GitHub logins (comma separated)'), 'alice, ghost');
     await user.click(screen.getByRole('button', { name: 'Resolve + Save Whitelist' }));
 
     await waitFor(() => {
@@ -162,25 +162,25 @@ describe('OwnerSetupPage flow', () => {
       expect(apiMocks.putWhitelist).toHaveBeenCalledWith('999', [{ github_user_id: 3003, github_login: 'alice' }]);
     });
 
-    await user.click(screen.getByRole('button', { name: 'Create Bot Key' }));
+    await user.click(screen.getByRole('button', { name: 'Create Key' }));
     await waitFor(() => {
       expect(apiMocks.createBotClientKey).toHaveBeenCalledWith('bc_1');
     });
-    expect(await screen.findByText(/New bot key secret/)).toBeTruthy();
+    expect(await screen.findByText(/Secret \(shown once\)/)).toBeTruthy();
 
-    await user.type(screen.getByLabelText('Revoke key id'), 'bck_existing');
+    await user.type(screen.getByLabelText('Revoke key ID'), 'bck_existing');
     await user.click(screen.getByRole('button', { name: 'Revoke Key' }));
     await waitFor(() => {
       expect(apiMocks.revokeBotClientKey).toHaveBeenCalledWith('bc_1', 'bck_existing');
     });
 
     await user.type(screen.getByLabelText('Installation IDs (comma separated)'), '123, 456');
-    await user.click(screen.getByRole('button', { name: 'Save Installation Bindings' }));
+    await user.click(screen.getByRole('button', { name: 'Save Bindings' }));
     await waitFor(() => {
       expect(apiMocks.setBotInstallationBindings).toHaveBeenCalledWith('bc_1', [123, 456]);
     });
 
-    await user.type(screen.getByLabelText('New bot client name'), 'new-owner-bot');
+    await user.type(screen.getByLabelText('Name'), 'new-owner-bot');
     await user.click(screen.getByRole('button', { name: 'Create Bot Client' }));
     await waitFor(() => {
       expect(apiMocks.createBotClient).toHaveBeenCalledWith('new-owner-bot');

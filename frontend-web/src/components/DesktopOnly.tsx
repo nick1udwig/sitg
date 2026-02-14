@@ -8,8 +8,9 @@ export function DesktopOnly({ children }: { children: ReactNode }) {
 
   return (
     <section className="card desktop-block">
+      <div className="brand">sitg</div>
       <h2>Desktop Only</h2>
-      <p className="meta">SITG MVP supports desktop web only.</p>
+      <p className="meta">This tool is designed for desktop browsers.</p>
       <p>Open this page on a desktop browser to continue.</p>
     </section>
   );

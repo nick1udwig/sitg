@@ -17,10 +17,22 @@ import { useAppState } from '../state';
 import { SUPPORTED_CHAIN_ID } from '../lib/wagmi';
 import type { GateResponse, StakeStatusResponse } from '../types';
 
+const STATUS_STYLES: Record<string, { dot: string; badge: string }> = {
+  PENDING: { dot: 'amber', badge: 'warn' },
+  VERIFIED: { dot: 'green', badge: 'ok' },
+  TIMED_OUT_CLOSED: { dot: 'red', badge: 'err' }
+};
+
+function countdownMinutes(countdown: string): number {
+  const parts = countdown.split(':');
+  return parseInt(parts[0], 10);
+}
+
 export function GatePage() {
   const { gateToken } = useParams<{ gateToken: string }>();
   const { state, runBusy, isBusy, pushNotice } = useAppState();
   const [gate, setGate] = useState<GateResponse | null>(null);
+  const [gateError, setGateError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState('00:00');
   const [stakeStatus, setStakeStatus] = useState<StakeStatusResponse | null>(null);
 
@@ -49,6 +61,7 @@ export function GatePage() {
         if (!mounted) {
           return;
         }
+        setGateError(toUserMessage(error));
         pushNotice('error', toUserMessage(error));
       });
 
@@ -178,7 +191,7 @@ export function GatePage() {
 
   if (!gateToken) {
     return (
-      <section className="card">
+      <section className="card" style={{ maxWidth: 600, margin: '0 auto' }}>
         <h2>Contributor Gate</h2>
         <p className="error">Invalid gate URL.</p>
       </section>
@@ -188,71 +201,121 @@ export function GatePage() {
   if (!gate) {
     return (
       <section className="grid two">
-        <article className="card"><p className="skeleton" /></article>
-        <article className="card"><p className="skeleton" /></article>
+        {gateError ? (
+          <article className="card" style={{ gridColumn: '1 / -1' }}>
+            <h2>PR Stake Gate</h2>
+            <div className="error-bar">{gateError}</div>
+          </article>
+        ) : (
+          <>
+            <article className="card"><p className="skeleton" /></article>
+            <article className="card"><p className="skeleton" /></article>
+          </>
+        )}
       </section>
     );
   }
 
+  const statusStyle = STATUS_STYLES[gate.status] ?? { dot: 'gray', badge: '' };
+  const minutes = countdownMinutes(countdown);
+  const isExpired = countdown === '00:00';
+  const isWarning = !isExpired && minutes < 5;
+  const countdownClass = `countdown${isExpired ? ' expired' : isWarning ? ' warning pulse' : ''}`;
+
+  const hasGitHub = Boolean(state.me);
+  const hasWallet = Boolean(account.address);
+
   return (
     <section className="grid two">
       <article className="card">
-        <h2>PR Stake Gate <span className="badge">{gate.status}</span></h2>
-        <p className="meta">{gate.github_repo_full_name} · PR #{gate.github_pr_number}</p>
-        <p className="countdown" aria-live="polite" aria-label={`Time remaining ${countdown}`}>{countdown}</p>
+        <p className="meta" style={{ marginBottom: 4 }}>{gate.github_repo_full_name} &rsaquo; PR #{gate.github_pr_number}</p>
+        <h2>PR Stake Gate</h2>
+        <span className={`badge ${statusStyle.badge}`}>
+          <span className={`status-dot ${statusStyle.dot}`} />
+          {gate.status}
+        </span>
+
+        <div className={countdownClass} aria-live="polite" aria-label={`Time remaining ${countdown}`}>
+          {countdown}
+        </div>
+
         <dl className="kv">
-          <dt>Challenge author</dt>
+          <dt>Author</dt>
           <dd>@{gate.github_pr_author_login}</dd>
           <dt>Head SHA</dt>
-          <dd>{gate.head_sha.slice(0, 12)}...</dd>
-          <dt>Threshold snapshot (wei)</dt>
+          <dd>{gate.head_sha.slice(0, 12)}</dd>
+          <dt>Threshold (wei)</dt>
           <dd>{gate.threshold_wei_snapshot}</dd>
-          <dt>Stake status</dt>
+          <dt>Stake</dt>
           <dd>
             {stakeStatus
-              ? `${stakeStatus.staked_balance_wei} wei · lock ${stakeStatus.lock_active ? 'active' : 'inactive'}`
+              ? `${stakeStatus.staked_balance_wei} wei \u00b7 lock ${stakeStatus.lock_active ? 'active' : 'inactive'}`
               : account.address
-                ? 'Stake endpoint unavailable or not configured'
-                : 'Connect wallet to check'}
+                ? 'Unavailable'
+                : 'Connect wallet'}
           </dd>
         </dl>
       </article>
 
       <article className="card">
-        <h3>Verification Actions</h3>
-        {blockingMessage ? <p className="error">{blockingMessage}</p> : <p className="success">Ready for verification.</p>}
-        <ul className="list">
-          <li>Connect wallet (header).</li>
-          <li>Link wallet to your GitHub account.</li>
-          <li>Sign PR confirmation before deadline.</li>
-        </ul>
-        <div className="row-wrap">
-          {!state.me ? (
-            <button onClick={() => githubSignIn(window.location.href)} aria-label="Sign in with GitHub">
-              Sign in with GitHub
+        <h3>Verification</h3>
+
+        {blockingMessage ? (
+          <div className="error-bar">{blockingMessage}</div>
+        ) : (
+          <div className="success-bar">Ready for verification.</div>
+        )}
+
+        <div className="step-list">
+          <div className="step">
+            <span className={`step-indicator${hasGitHub ? ' done' : ''}`}>{hasGitHub ? '\u2713' : '1'}</span>
+            <span className={`step-label${hasGitHub ? ' done' : ''}`}>Sign in with GitHub</span>
+            {!hasGitHub && (
+              <button
+                style={{ marginLeft: 'auto', padding: '4px 10px' }}
+                disabled={isBusy('github-sign-in')}
+                onClick={() => runBusy('github-sign-in', () => githubSignIn(window.location.href))}
+              >
+                {isBusy('github-sign-in') ? 'Redirecting...' : 'Sign in'}
+              </button>
+            )}
+          </div>
+          <div className="step">
+            <span className={`step-indicator${hasWallet ? ' done' : ''}`}>{hasWallet ? '\u2713' : '2'}</span>
+            <span className={`step-label${hasWallet ? ' done' : ''}`}>Connect wallet</span>
+          </div>
+          <div className="step">
+            <span className="step-indicator">3</span>
+            <span className="step-label">Link wallet to GitHub</span>
+            <button
+              className="ghost"
+              style={{ marginLeft: 'auto', padding: '4px 10px' }}
+              disabled={Boolean(blockingMessage) || !hasWallet || isBusy('wallet-link') || isBusy('switch-chain')}
+              onClick={handleLinkWallet}
+            >
+              {isBusy('wallet-link') ? 'Linking...' : 'Link'}
             </button>
-          ) : null}
-          <button
-            className="ghost"
-            disabled={Boolean(blockingMessage) || !account.address || isBusy('wallet-link') || isBusy('switch-chain')}
-            onClick={handleLinkWallet}
-            aria-label="Link connected wallet"
-          >
-            {isBusy('wallet-link') ? 'Linking...' : 'Link Wallet'}
-          </button>
-          <button
-            disabled={Boolean(blockingMessage) || !account.address || isBusy('gate-confirm') || isBusy('switch-chain')}
-            onClick={handleConfirm}
-            aria-label="Sign PR confirmation"
-          >
-            {isBusy('gate-confirm') ? 'Confirming...' : 'Sign PR Confirmation'}
-          </button>
-          {stakeUrl ? (
+          </div>
+          <div className="step">
+            <span className="step-indicator">4</span>
+            <span className="step-label">Sign PR confirmation</span>
+            <button
+              style={{ marginLeft: 'auto', padding: '4px 10px' }}
+              disabled={Boolean(blockingMessage) || !hasWallet || isBusy('gate-confirm') || isBusy('switch-chain')}
+              onClick={handleConfirm}
+            >
+              {isBusy('gate-confirm') ? 'Confirming...' : 'Sign'}
+            </button>
+          </div>
+        </div>
+
+        {stakeUrl ? (
+          <div style={{ marginTop: 8 }}>
             <a className="button-like" href={stakeUrl} target="_blank" rel="noreferrer">
               Fund + Stake
             </a>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </article>
     </section>
   );
