@@ -43,11 +43,16 @@ npm run build
 ### 2. Create Postgres DB/user
 
 ```bash
-sudo -u postgres psql <<'SQL'
-create role sitg login password 'change_me';
-create database sitg owner sitg;
-SQL
+sudo -u postgres /opt/sitg/deploy/scripts/bootstrap-postgres.sh \
+  --db sitg \
+  --user sitg \
+  --password 'change_me'
 ```
+
+Notes:
+- This command is idempotent. Re-running updates role password and keeps the DB.
+- If your Postgres superuser is not `postgres`, pass `--superuser <name>`.
+- For TCP admin access, pass `--host` and `--port`.
 
 ### 3. Configure backend env
 
