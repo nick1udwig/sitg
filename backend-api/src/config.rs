@@ -62,3 +62,102 @@ impl Config {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    const TEST_ENV_KEYS: &[&str] = &[
+        "HOST",
+        "PORT",
+        "DATABASE_URL",
+        "DB_MAX_CONNECTIONS",
+        "APP_BASE_URL",
+        "API_BASE_URL",
+        "GITHUB_CLIENT_ID",
+        "GITHUB_CLIENT_SECRET",
+        "SESSION_COOKIE_NAME",
+        "BLOCKED_UNLINK_WALLETS",
+        "BASE_RPC_URL",
+        "STAKING_CONTRACT_ADDRESS",
+    ];
+
+    struct EnvSnapshot {
+        entries: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvSnapshot {
+        fn capture() -> Self {
+            let entries = TEST_ENV_KEYS
+                .iter()
+                .map(|key| (*key, env::var(key).ok()))
+                .collect();
+            Self { entries }
+        }
+
+        fn clear_tracked() {
+            for key in TEST_ENV_KEYS {
+                unsafe {
+                    env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (key, value) in &self.entries {
+                match value {
+                    Some(v) => unsafe {
+                        env::set_var(key, v);
+                    },
+                    None => unsafe {
+                        env::remove_var(key);
+                    },
+                }
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn parses_defaults_and_normalizes_blocked_wallets() {
+        let _lock = env_lock().lock().expect("env lock");
+        let _snapshot = EnvSnapshot::capture();
+        EnvSnapshot::clear_tracked();
+
+        unsafe {
+            env::set_var("DATABASE_URL", "postgres://localhost/sitg");
+            env::set_var("PORT", "not-a-number");
+            env::set_var("DB_MAX_CONNECTIONS", "invalid");
+            env::set_var("BLOCKED_UNLINK_WALLETS", " 0xAbC , , 0xDEF,");
+        }
+
+        let config = Config::from_env().expect("config should parse");
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.port, 8080);
+        assert_eq!(config.db_max_connections, 10);
+        assert_eq!(config.app_base_url, "https://sitg.io");
+        assert_eq!(config.api_base_url, "http://localhost:8080");
+        assert_eq!(config.session_cookie_name, "sitg_session");
+        assert_eq!(
+            config.blocked_unlink_wallets,
+            vec!["0xabc".to_string(), "0xdef".to_string()]
+        );
+    }
+
+    #[test]
+    fn requires_database_url() {
+        let _lock = env_lock().lock().expect("env lock");
+        let _snapshot = EnvSnapshot::capture();
+        EnvSnapshot::clear_tracked();
+
+        let err = Config::from_env().expect_err("DATABASE_URL should be required");
+        assert!(matches!(err, env::VarError::NotPresent));
+    }
+}

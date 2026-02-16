@@ -152,6 +152,24 @@ fn parse_u256_hex_to_u64(hex_value: &str) -> ApiResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+
+    fn test_config(blocked_unlink_wallets: Vec<String>) -> Config {
+        Config {
+            host: "0.0.0.0".to_string(),
+            port: 8080,
+            database_url: "postgres://localhost/sitg".to_string(),
+            db_max_connections: 10,
+            app_base_url: "https://sitg.io".to_string(),
+            api_base_url: "http://localhost:8080".to_string(),
+            github_client_id: None,
+            github_client_secret: None,
+            session_cookie_name: "sitg_session".to_string(),
+            blocked_unlink_wallets,
+            base_rpc_url: None,
+            staking_contract_address: None,
+        }
+    }
 
     #[test]
     fn encodes_call_data() {
@@ -167,5 +185,40 @@ mod tests {
     fn parses_u256_hex_small() {
         let value = parse_u256_hex_to_u128("0x0de0b6b3a7640000").expect("parse");
         assert_eq!(value, 1_000_000_000_000_000_000u128);
+    }
+
+    #[test]
+    fn rejects_invalid_wallet_hex_characters() {
+        let err = encode_call_data(
+            "stakedBalance(address)",
+            "0x111111111111111111111111111111111111111g",
+        )
+        .expect_err("non-hex wallet should fail");
+        assert!(matches!(err, ApiError::Validation(_)));
+    }
+
+    #[test]
+    fn rejects_u256_values_too_large_for_u128() {
+        let err = parse_u256_hex_to_u128("0x100000000000000000000000000000000")
+            .expect_err("overflow should fail");
+        assert!(matches!(err, ApiError::Validation(_)));
+    }
+
+    #[test]
+    fn rejects_unlock_time_that_does_not_fit_u64() {
+        let err = parse_u256_hex_to_u64("0x10000000000000000").expect_err("u64 overflow");
+        assert!(matches!(err, ApiError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn blocked_wallet_bypasses_rpc_and_returns_sentinel_stake() {
+        let blocked = "0x1111111111111111111111111111111111111111".to_string();
+        let service = StakeService::new(&test_config(vec![blocked]));
+        let status = service
+            .stake_status("0x1111111111111111111111111111111111111111")
+            .await
+            .expect("blocked wallet should short-circuit");
+        assert_eq!(status.balance_wei, 1);
+        assert_eq!(status.unlock_time_unix, u64::MAX);
     }
 }

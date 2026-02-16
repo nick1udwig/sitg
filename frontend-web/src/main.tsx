@@ -26,6 +26,7 @@ function Bootstrapper({ children }: { children: ReactNode }) {
     const params = new URLSearchParams(window.location.search);
     const auth = params.get('auth');
     const reason = params.get('reason');
+    const session = params.get('session');
     if (auth === 'cancelled') {
       if (reason === 'access_denied') {
         pushNotice('info', 'GitHub sign-in was cancelled.');
@@ -34,6 +35,14 @@ function Bootstrapper({ children }: { children: ReactNode }) {
       }
       params.delete('auth');
       params.delete('reason');
+      const nextSearch = params.toString();
+      const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+      window.history.replaceState({}, '', nextUrl);
+    }
+
+    if (session === 'expired') {
+      pushNotice('info', 'Session expired, please sign in again.');
+      params.delete('session');
       const nextSearch = params.toString();
       const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
       window.history.replaceState({}, '', nextUrl);

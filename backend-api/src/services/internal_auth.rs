@@ -112,6 +112,21 @@ mod tests {
 
         verify_hmac(&secret, timestamp, message, signature.as_slice()).expect("valid");
     }
+
+    #[test]
+    fn rejects_unhashed_storage_secret() {
+        let err = verify_hmac("plain-secret", Utc::now().timestamp(), "abc", &[0u8; 32])
+            .expect_err("secret format should be rejected");
+        assert!(matches!(err, ApiError::Forbidden));
+    }
+
+    #[test]
+    fn rejects_invalid_signature_for_payload() {
+        let secret = encode_bot_secret_for_storage("topsecret");
+        let err = verify_hmac(&secret, Utc::now().timestamp(), "abc", &[0u8; 32])
+            .expect_err("signature should not verify");
+        assert!(matches!(err, ApiError::Forbidden));
+    }
 }
 
 pub async fn ensure_installation_bound(

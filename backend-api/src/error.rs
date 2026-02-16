@@ -78,3 +78,41 @@ impl IntoResponse for ApiError {
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::to_bytes, response::IntoResponse};
+    use serde_json::Value;
+
+    async fn error_payload(err: ApiError) -> (StatusCode, Value) {
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response bytes");
+        let payload: Value = serde_json::from_slice(&bytes).expect("json body");
+        (status, payload)
+    }
+
+    #[tokio::test]
+    async fn maps_wallet_has_stake_conflict_to_specific_code() {
+        let (status, payload) = error_payload(ApiError::Conflict("WALLET_HAS_STAKE")).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(payload["error"]["code"], "WALLET_HAS_STAKE");
+    }
+
+    #[tokio::test]
+    async fn maps_generic_conflict_to_conflict_code() {
+        let (status, payload) = error_payload(ApiError::Conflict("RATE_LIMITED")).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(payload["error"]["code"], "CONFLICT");
+    }
+
+    #[tokio::test]
+    async fn maps_internal_error_to_internal_status_and_code() {
+        let (status, payload) = error_payload(ApiError::Internal(anyhow::anyhow!("boom"))).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(payload["error"]["code"], "INTERNAL_ERROR");
+    }
+}

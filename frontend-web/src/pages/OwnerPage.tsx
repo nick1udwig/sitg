@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import type { ApiError } from '../types';
 import {
   createBotClient,
   createBotClientKey,
@@ -38,7 +39,7 @@ const DEFAULT_FORM: RepoConfigFormState = {
 };
 
 export function OwnerPage() {
-  const { state, setRepo, runBusy, isBusy, pushNotice } = useAppState();
+  const { state, setMe, setRepo, runBusy, isBusy, pushNotice } = useAppState();
   const [config, setConfig] = useState<RepoConfigResponse | null>(null);
   const [repoOptions, setRepoOptions] = useState<RepoOption[]>([]);
   const [installStatus, setInstallStatus] = useState<'installed' | 'not-installed' | 'unknown'>('unknown');
@@ -53,6 +54,7 @@ export function OwnerPage() {
   const [bindingsInput, setBindingsInput] = useState('');
   const [revokeKeyId, setRevokeKeyId] = useState('');
   const [createdKeySecret, setCreatedKeySecret] = useState<string | null>(null);
+  const [signInStarting, setSignInStarting] = useState(false);
 
   const selectedRepo = state.selectedRepo;
   const selectedOwnedRepo = useMemo<RepoSelection | null>(() => {
@@ -61,6 +63,21 @@ export function OwnerPage() {
     if (!match) return null;
     return { id: String(match.id), fullName: match.full_name };
   }, [repoOptions, selectedRepo]);
+
+  const isSessionExpiredError = (error: unknown): boolean => {
+    if (!error || typeof error !== 'object') return false;
+    const apiError = error as ApiError;
+    if (apiError.code === 'UNAUTHENTICATED' || apiError.status === 401) {
+      return true;
+    }
+
+    // Backward compatibility for older backend builds that returned 400 VALIDATION_ERROR.
+    const message = (apiError.message ?? '').toLowerCase();
+    return (
+      apiError.code === 'VALIDATION_ERROR'
+      && message.includes('github repository listing failed')
+    );
+  };
 
   async function refreshBotClients(): Promise<void> {
     const clients = await listBotClients();
@@ -106,11 +123,17 @@ export function OwnerPage() {
         }
       })
       .catch((error) => {
-        if (mounted) pushNotice('error', toUserMessage(error));
+        if (!mounted) return;
+        if (isSessionExpiredError(error)) {
+          setMe(null);
+          window.location.replace('/?session=expired');
+          return;
+        }
+        pushNotice('error', toUserMessage(error));
       });
 
     return () => { mounted = false; };
-  }, [state.me, state.selectedRepo?.id, setRepo, pushNotice]);
+  }, [state.me, state.selectedRepo?.id, setMe, setRepo, pushNotice]);
 
   useEffect(() => {
     if (!selectedOwnedRepo || !state.me) {
@@ -292,6 +315,17 @@ export function OwnerPage() {
   };
 
   const installUrl = import.meta.env.VITE_GITHUB_APP_INSTALL_URL ?? '';
+  const handleGitHubSignIn = async (): Promise<void> => {
+    if (isBusy('github-sign-in') || signInStarting) return;
+    setSignInStarting(true);
+    const started = await runBusy('github-sign-in', async () => {
+      await githubSignIn(window.location.href);
+      return true;
+    });
+    if (!started) {
+      setSignInStarting(false);
+    }
+  };
 
   if (!state.me) {
     return (
@@ -301,11 +335,11 @@ export function OwnerPage() {
           Sign in with GitHub to configure repositories, set stake thresholds, and manage bot clients.
         </p>
         <button
-          disabled={isBusy('github-sign-in')}
-          onClick={() => runBusy('github-sign-in', () => githubSignIn(window.location.href))}
+          disabled={isBusy('github-sign-in') || signInStarting}
+          onClick={() => void handleGitHubSignIn()}
           aria-label="Sign in with GitHub"
         >
-          {isBusy('github-sign-in') ? 'Redirecting...' : 'Sign in with GitHub'}
+          {isBusy('github-sign-in') || signInStarting ? 'Opening GitHub...' : 'Sign in with GitHub'}
         </button>
       </div>
     );

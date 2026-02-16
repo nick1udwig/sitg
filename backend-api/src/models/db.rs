@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -73,14 +72,4 @@ pub struct BotClientSummaryRow {
     pub name: String,
     pub status: String,
     pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CoinGeckoPriceEnvelope {
-    pub ethereum: CoinGeckoPrice,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CoinGeckoPrice {
-    pub usd: Decimal,
 }

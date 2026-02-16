@@ -1,11 +1,14 @@
+use std::time::Duration as StdDuration;
+
 use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
+use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
     error::{ApiError, ApiResult},
-    models::db::{CoinGeckoPriceEnvelope, SpotQuoteRow},
+    models::db::SpotQuoteRow,
 };
 
 #[derive(Clone)]
@@ -23,12 +26,35 @@ pub struct QuoteSelection {
     pub from_cache: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct CoinGeckoPriceEnvelope {
+    ethereum: CoinGeckoPrice,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoinGeckoPrice {
+    usd: Decimal,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoinbaseSpotEnvelope {
+    data: CoinbaseSpotData,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoinbaseSpotData {
+    amount: String,
+}
+
 impl QuoteService {
     pub fn new(pool: PgPool) -> Self {
-        Self {
-            pool,
-            client: reqwest::Client::new(),
-        }
+        let client = reqwest::Client::builder()
+            .user_agent("sitg-backend")
+            .timeout(StdDuration::from_secs(8))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        Self { pool, client }
     }
 
     pub async fn live_or_cached_eth_usd_quote(&self) -> ApiResult<QuoteSelection> {
@@ -42,10 +68,21 @@ impl QuoteService {
     }
 
     async fn fetch_live(&self) -> ApiResult<QuoteSelection> {
+        match self.fetch_live_from_coingecko().await {
+            Ok(quote) => Ok(quote),
+            Err(primary_err) => {
+                tracing::warn!(error = %primary_err, "coingecko quote fetch failed, trying coinbase");
+                self.fetch_live_from_coinbase().await
+            }
+        }
+    }
+
+    async fn fetch_live_from_coingecko(&self) -> ApiResult<QuoteSelection> {
         let response = self
             .client
             .get("https://api.coingecko.com/api/v3/simple/price")
             .query(&[("ids", "ethereum"), ("vs_currencies", "usd")])
+            .header("Accept", "application/json")
             .send()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
@@ -63,6 +100,39 @@ impl QuoteService {
             return Err(ApiError::PriceUnavailable);
         }
 
+        self.persist_live_quote("coingecko", parsed.ethereum.usd)
+            .await
+    }
+
+    async fn fetch_live_from_coinbase(&self) -> ApiResult<QuoteSelection> {
+        let response = self
+            .client
+            .get("https://api.coinbase.com/v2/prices/ETH-USD/spot")
+            .header("Accept", "application/json")
+            .header("CB-VERSION", "2015-04-08")
+            .send()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        if !response.status().is_success() {
+            return Err(ApiError::PriceUnavailable);
+        }
+
+        let parsed: CoinbaseSpotEnvelope = response
+            .json()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        let price = Decimal::from_str_exact(parsed.data.amount.trim())
+            .map_err(|_| ApiError::PriceUnavailable)?;
+        if price <= Decimal::ZERO {
+            return Err(ApiError::PriceUnavailable);
+        }
+
+        self.persist_live_quote("coinbase", price).await
+    }
+
+    async fn persist_live_quote(&self, source: &str, price: Decimal) -> ApiResult<QuoteSelection> {
         let id = Uuid::new_v4();
         let now = Utc::now();
         let expires_at = now + Duration::minutes(5);
@@ -70,11 +140,12 @@ impl QuoteService {
         sqlx::query(
             r#"
             insert into spot_quotes (id, source, pair, price, fetched_at, expires_at, created_at)
-            values ($1, 'coingecko', 'ETH_USD', $2, $3, $4, $3)
+            values ($1, $2, 'ETH_USD', $3, $4, $5, $4)
             "#,
         )
         .bind(id)
-        .bind(parsed.ethereum.usd)
+        .bind(source)
+        .bind(price)
         .bind(now)
         .bind(expires_at)
         .execute(&self.pool)
@@ -82,8 +153,8 @@ impl QuoteService {
 
         Ok(QuoteSelection {
             quote_id: id,
-            source: "coingecko".to_string(),
-            price: parsed.ethereum.usd,
+            source: source.to_string(),
+            price,
             fetched_at: now,
             from_cache: false,
         })
@@ -94,7 +165,7 @@ impl QuoteService {
             r#"
             select id, source, price, fetched_at
             from spot_quotes
-            where source = 'coingecko' and pair = 'ETH_USD'
+            where pair = 'ETH_USD'
             order by fetched_at desc
             limit 1
             "#,

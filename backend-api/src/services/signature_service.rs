@@ -106,4 +106,18 @@ mod tests {
         assert_eq!(b.len(), 66);
         assert!(b.starts_with("0x"));
     }
+
+    #[test]
+    fn uuid_to_uint256_decimal_is_stable() {
+        let id = uuid::Uuid::parse_str("2c6dc47f-00ea-401d-8d96-13794ca39f35").expect("uuid");
+        let decimal = uuid_to_uint256_decimal(id);
+        assert_eq!(decimal, "59055977586658741076653971232858021685");
+    }
+
+    #[test]
+    fn rejects_invalid_personal_sign_signature() {
+        let err = recover_personal_sign_address("hello", "0x123")
+            .expect_err("invalid signature should fail");
+        assert!(matches!(err, ApiError::Validation(_)));
+    }
 }

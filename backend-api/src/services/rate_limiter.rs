@@ -56,4 +56,26 @@ mod tests {
         let err = limiter.check("u:1", 2, 60).expect_err("third should fail");
         assert!(matches!(err, ApiError::Conflict("RATE_LIMITED")));
     }
+
+    #[test]
+    fn resets_counter_when_window_has_elapsed() {
+        let limiter = RateLimiter::new();
+        limiter.check("u:1", 1, 0).expect("first");
+        limiter
+            .check("u:1", 1, 0)
+            .expect("window reset should allow second call");
+    }
+
+    #[test]
+    fn tracks_limits_per_key() {
+        let limiter = RateLimiter::new();
+        limiter.check("u:1", 1, 60).expect("first key");
+        let err = limiter
+            .check("u:1", 1, 60)
+            .expect_err("first key should be limited");
+        assert!(matches!(err, ApiError::Conflict("RATE_LIMITED")));
+        limiter
+            .check("u:2", 1, 60)
+            .expect("second key should not be limited");
+    }
 }

@@ -178,6 +178,9 @@ impl GithubOAuthService {
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(false);
         }
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Unauthenticated);
+        }
         if !response.status().is_success() {
             return Err(ApiError::validation(
                 "GitHub permission lookup failed for repo owner check",
@@ -205,6 +208,9 @@ impl GithubOAuthService {
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Unauthenticated);
+        }
         if !response.status().is_success() {
             return Err(ApiError::validation("GitHub repository listing failed"));
         }
@@ -244,6 +250,9 @@ impl GithubOAuthService {
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Unauthenticated);
+        }
         if !response.status().is_success() {
             return Err(ApiError::validation("GitHub repository lookup failed"));
         }
@@ -257,5 +266,80 @@ impl GithubOAuthService {
             full_name: repo.full_name,
             can_write: Self::can_write(repo.permissions.as_ref()),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config(client_id: Option<&str>) -> Config {
+        Config {
+            host: "0.0.0.0".to_string(),
+            port: 8080,
+            database_url: "postgres://localhost/sitg".to_string(),
+            db_max_connections: 10,
+            app_base_url: "https://sitg.io".to_string(),
+            api_base_url: "https://api.sitg.io".to_string(),
+            github_client_id: client_id.map(str::to_string),
+            github_client_secret: Some("secret".to_string()),
+            session_cookie_name: "sitg_session".to_string(),
+            blocked_unlink_wallets: vec![],
+            base_rpc_url: None,
+            staking_contract_address: None,
+        }
+    }
+
+    #[test]
+    fn can_write_requires_any_write_permission_bit() {
+        let none = GithubRepoPermissions {
+            admin: Some(false),
+            maintain: Some(false),
+            push: Some(false),
+        };
+        let push = GithubRepoPermissions {
+            admin: Some(false),
+            maintain: Some(false),
+            push: Some(true),
+        };
+        let admin = GithubRepoPermissions {
+            admin: Some(true),
+            maintain: Some(false),
+            push: Some(false),
+        };
+        let maintain = GithubRepoPermissions {
+            admin: Some(false),
+            maintain: Some(true),
+            push: Some(false),
+        };
+
+        assert!(!GithubOAuthService::can_write(Some(&none)));
+        assert!(GithubOAuthService::can_write(Some(&push)));
+        assert!(GithubOAuthService::can_write(Some(&admin)));
+        assert!(GithubOAuthService::can_write(Some(&maintain)));
+        assert!(!GithubOAuthService::can_write(None));
+    }
+
+    #[test]
+    fn authorize_url_requires_client_id() {
+        let service = GithubOAuthService::new();
+        let err = service
+            .authorize_url(&test_config(None), "state-123")
+            .expect_err("missing client id should fail");
+        assert!(matches!(err, ApiError::Validation(msg) if msg.contains("GITHUB_CLIENT_ID")));
+    }
+
+    #[test]
+    fn authorize_url_encodes_callback_scope_and_state() {
+        let service = GithubOAuthService::new();
+        let url = service
+            .authorize_url(&test_config(Some("client-123")), "state-123")
+            .expect("authorize URL");
+        assert!(url.contains("client_id=client-123"));
+        assert!(url.contains(
+            "redirect_uri=https%3A%2F%2Fapi.sitg.io%2Fapi%2Fv1%2Fauth%2Fgithub%2Fcallback"
+        ));
+        assert!(url.contains("scope=read%3Auser%20public_repo"));
+        assert!(url.ends_with("&state=state-123"));
     }
 }
