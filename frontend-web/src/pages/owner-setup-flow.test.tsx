@@ -28,7 +28,7 @@ vi.mock('../api', async () => {
   };
 });
 
-import { OwnerSetupPage } from './OwnerSetupPage';
+import { OwnerPage } from './OwnerPage';
 
 function SeedOwner() {
   const { setMe } = useAppState();
@@ -48,12 +48,12 @@ function renderPage() {
   return render(
     <AppStateProvider>
       <SeedOwner />
-      <OwnerSetupPage />
+      <OwnerPage />
     </AppStateProvider>
   );
 }
 
-describe('OwnerSetupPage flow', () => {
+describe('OwnerPage flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -129,16 +129,17 @@ describe('OwnerSetupPage flow', () => {
     const user = userEvent.setup();
     renderPage();
 
-    await screen.findByText('@owner');
-
-    await user.type(screen.getByLabelText('Repo ID'), '999');
-    await user.type(screen.getByLabelText('Full name'), 'owner/repo');
-    await user.click(screen.getByRole('button', { name: 'Use Repository' }));
+    // Wait for sidebar repos to load
+    const repoButton = await screen.findByRole('button', { name: 'owner/repo' });
+    await user.click(repoButton);
 
     await waitFor(() => {
       expect(apiMocks.getRepoConfig).toHaveBeenCalledWith('999');
       expect(apiMocks.getInstallStatus).toHaveBeenCalledWith('999');
     });
+
+    // Navigate to Threshold & Whitelist tab
+    await user.click(screen.getByRole('button', { name: 'Threshold & Whitelist' }));
 
     await user.selectOptions(screen.getByLabelText('Input mode'), 'ETH');
     await user.clear(screen.getByLabelText('Value'));
@@ -162,6 +163,9 @@ describe('OwnerSetupPage flow', () => {
       expect(apiMocks.putWhitelist).toHaveBeenCalledWith('999', [{ github_user_id: 3003, github_login: 'alice' }]);
     });
 
+    // Navigate to GitHub Bot tab
+    await user.click(screen.getByRole('button', { name: 'GitHub Bot' }));
+
     await user.click(screen.getByRole('button', { name: 'Create Key' }));
     await waitFor(() => {
       expect(apiMocks.createBotClientKey).toHaveBeenCalledWith('bc_1');
@@ -184,6 +188,26 @@ describe('OwnerSetupPage flow', () => {
     await user.click(screen.getByRole('button', { name: 'Create Bot Client' }));
     await waitFor(() => {
       expect(apiMocks.createBotClient).toHaveBeenCalledWith('new-owner-bot');
+    });
+  });
+
+  it('allows adding a repo by full name when repo id is left empty', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole('button', { name: 'owner/repo' });
+    const addRepoButtons = screen.getAllByRole('button', { name: 'Add repository' });
+    await user.click(addRepoButtons[addRepoButtons.length - 1]);
+
+    const fullNameInputs = screen.getAllByLabelText('Full name');
+    await user.type(fullNameInputs[fullNameInputs.length - 1], 'owner/repo');
+
+    const addButtons = screen.getAllByRole('button', { name: 'Add' });
+    await user.click(addButtons[addButtons.length - 1]);
+
+    await waitFor(() => {
+      expect(apiMocks.getRepoConfig).toHaveBeenCalledWith('999');
+      expect(apiMocks.getInstallStatus).toHaveBeenCalledWith('999');
     });
   });
 });

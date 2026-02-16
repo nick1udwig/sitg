@@ -140,21 +140,48 @@ async fn auth_github_callback(
     jar: CookieJar,
 ) -> ApiResult<(CookieJar, Redirect)> {
     state.rate_limiter.check("auth:callback:global", 100, 60)?;
-    let redirect_after: Option<String> = sqlx::query_scalar(
-        "delete from oauth_states where state = $1 and expires_at > $2 returning redirect_after",
-    )
-    .bind(&query.state)
-    .bind(Utc::now())
-    .fetch_optional(&state.pool)
-    .await?;
+    let redirect_after: Option<String> = if let Some(oauth_state) = query.state.as_deref() {
+        sqlx::query_scalar(
+            "delete from oauth_states where state = $1 and expires_at > $2 returning redirect_after",
+        )
+        .bind(oauth_state)
+        .bind(Utc::now())
+        .fetch_optional(&state.pool)
+        .await?
+    } else {
+        None
+    };
+
+    if let Some(error_code) = query.error.as_deref() {
+        let reason = if error_code == "access_denied" {
+            "access_denied"
+        } else {
+            "oauth_error"
+        };
+        let redirect_to = append_auth_query(
+            sanitize_redirect_url(
+                redirect_after,
+                &state.config.app_base_url,
+                &state.config.app_base_url,
+            ),
+            "cancelled",
+            reason,
+        );
+        return Ok((jar, Redirect::temporary(&redirect_to)));
+    }
 
     if redirect_after.is_none() {
         return Err(ApiError::validation("OAuth state is invalid or expired"));
     }
 
+    let code = query
+        .code
+        .as_deref()
+        .ok_or_else(|| ApiError::validation("GitHub OAuth code is missing"))?;
+
     let access_token = state
         .github_oauth_service
-        .exchange_code_for_token(&state.config, &query.code)
+        .exchange_code_for_token(&state.config, code)
         .await?;
     let gh_user = state.github_oauth_service.fetch_user(&access_token).await?;
 
@@ -1743,6 +1770,17 @@ fn sanitize_redirect_url(
     }
 }
 
+fn append_auth_query(base_url: String, auth: &str, reason: &str) -> String {
+    match reqwest::Url::parse(&base_url) {
+        Ok(mut parsed) => {
+            parsed.query_pairs_mut().append_pair("auth", auth);
+            parsed.query_pairs_mut().append_pair("reason", reason);
+            parsed.into()
+        }
+        Err(_) => base_url,
+    }
+}
+
 fn normalize_wallet_address(address: &str) -> ApiResult<String> {
     let lowered = address.trim().to_lowercase();
     let valid = lowered.len() == 42
@@ -1897,6 +1935,12 @@ mod tests {
             "https://sitg.io",
         );
         assert_eq!(fallback, "https://sitg.io");
+    }
+
+    #[test]
+    fn appends_auth_query_to_redirect() {
+        let redirect = append_auth_query("https://sitg.io/owner?tab=setup".to_string(), "cancelled", "access_denied");
+        assert_eq!(redirect, "https://sitg.io/owner?tab=setup&auth=cancelled&reason=access_denied");
     }
 
     #[test]

@@ -18,7 +18,7 @@ function truncateAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-export function WalletPage() {
+export function ContributorPage() {
   const { state, runBusy, isBusy, pushNotice } = useAppState();
   const account = useAccount();
   const { signMessageAsync } = useSignMessage();
@@ -34,25 +34,17 @@ export function WalletPage() {
     let mounted = true;
     void getWalletLinkStatus()
       .then((status) => {
-        if (mounted) {
-          setWalletLinkStatus(status);
-        }
+        if (mounted) setWalletLinkStatus(status);
       })
       .catch((error) => {
-        if (mounted) {
-          pushNotice('error', toUserMessage(error));
-        }
+        if (mounted) pushNotice('error', toUserMessage(error));
       });
 
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [state.me, pushNotice]);
 
   const ensureBaseChain = async (): Promise<boolean> => {
-    if (!account.chainId || account.chainId === SUPPORTED_CHAIN_ID) {
-      return true;
-    }
+    if (!account.chainId || account.chainId === SUPPORTED_CHAIN_ID) return true;
 
     const switched = await runBusy('switch-chain', async () => {
       await switchChainAsync({ chainId: SUPPORTED_CHAIN_ID });
@@ -63,20 +55,13 @@ export function WalletPage() {
       pushNotice('error', 'Could not switch to Base network.');
       return false;
     }
-
     return true;
   };
 
   const handleLink = async (): Promise<void> => {
     const address = account.address;
-    if (!address) {
-      pushNotice('error', 'Connect a wallet first.');
-      return;
-    }
-
-    if (!(await ensureBaseChain())) {
-      return;
-    }
+    if (!address) { pushNotice('error', 'Connect a wallet first.'); return; }
+    if (!(await ensureBaseChain())) return;
 
     const result = await runBusy('wallet-link', async () => {
       const challenge = await requestWalletLinkChallenge();
@@ -84,11 +69,7 @@ export function WalletPage() {
       return confirmWalletLink({ nonce: challenge.nonce, wallet_address: address, signature });
     });
 
-    if (!result) {
-      pushNotice('error', 'Wallet link failed.');
-      return;
-    }
-
+    if (!result) { pushNotice('error', 'Wallet link failed.'); return; }
     pushNotice('success', `Wallet linked: ${result.wallet_address}`);
     const refreshed = await getWalletLinkStatus();
     setWalletLinkStatus(refreshed);
@@ -100,14 +81,28 @@ export function WalletPage() {
       return true;
     });
 
-    if (!result) {
-      pushNotice('error', 'Wallet unlink failed.');
-      return;
-    }
-
+    if (!result) { pushNotice('error', 'Wallet unlink failed.'); return; }
     pushNotice('success', 'Wallet unlinked.');
     setWalletLinkStatus(null);
   };
+
+  if (!state.me) {
+    return (
+      <div className="auth-prompt">
+        <div className="landing-brand">sitg</div>
+        <p className="auth-prompt-desc">
+          Link your wallet to your GitHub account. When a bot posts a gate link on your PR, click it to verify your stake.
+        </p>
+        <button
+          disabled={isBusy('github-sign-in')}
+          onClick={() => runBusy('github-sign-in', () => githubSignIn(window.location.href))}
+          aria-label="Sign in with GitHub"
+        >
+          {isBusy('github-sign-in') ? 'Redirecting...' : 'Sign in with GitHub'}
+        </button>
+      </div>
+    );
+  }
 
   const chainName = account.chainId ? (CHAIN_NAMES[account.chainId] ?? `Chain ${account.chainId}`) : 'Unknown';
 
@@ -115,29 +110,15 @@ export function WalletPage() {
     <section className="grid" style={{ maxWidth: 600, margin: '0 auto' }}>
       <article className="card">
         <h2>Wallet Link</h2>
-        <p className="meta">One active wallet per GitHub account and one active GitHub account per wallet.</p>
-
-        {!state.me ? (
-          <button
-            disabled={isBusy('github-sign-in')}
-            onClick={() => runBusy('github-sign-in', () => githubSignIn(window.location.href))}
-            aria-label="Sign in with GitHub"
-          >
-            {isBusy('github-sign-in') ? 'Redirecting...' : 'Sign in with GitHub'}
-          </button>
-        ) : null}
+        <p className="meta">Link your wallet to your GitHub account. When a bot posts a gate link on your PR, click it to verify your stake.</p>
 
         <dl className="kv">
           <dt>GitHub</dt>
           <dd>
-            {state.me ? (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <span className="status-dot green" />
-                @{state.me.github_login}
-              </span>
-            ) : (
-              <span style={{ color: 'var(--ink-soft)' }}>Not signed in</span>
-            )}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className="status-dot green" />
+              @{state.me.github_login}
+            </span>
           </dd>
           <dt>Wallet</dt>
           <dd>{account.address ? truncateAddress(account.address) : <span style={{ color: 'var(--ink-soft)' }}>Not connected</span>}</dd>

@@ -37,7 +37,7 @@ vi.mock('../api', async () => {
   };
 });
 
-import { WalletPage } from './WalletPage';
+import { ContributorPage } from './ContributorPage';
 
 function SeedUser() {
   const { setMe } = useAppState();
@@ -53,16 +53,16 @@ function SeedUser() {
   return null;
 }
 
-function renderAuthedWalletPage() {
+function renderAuthedContributorPage() {
   return render(
     <AppStateProvider>
       <SeedUser />
-      <WalletPage />
+      <ContributorPage />
     </AppStateProvider>
   );
 }
 
-describe('WalletPage flow', () => {
+describe('ContributorPage flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     wagmiMocks.account = { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', chainId: 1 };
@@ -91,7 +91,7 @@ describe('WalletPage flow', () => {
 
   it('links and unlinks wallet for authenticated user', async () => {
     const user = userEvent.setup();
-    renderAuthedWalletPage();
+    renderAuthedContributorPage();
 
     expect(await screen.findByText('@contrib')).toBeTruthy();
 
@@ -119,7 +119,7 @@ describe('WalletPage flow', () => {
     const user = userEvent.setup();
     render(
       <AppStateProvider>
-        <WalletPage />
+        <ContributorPage />
       </AppStateProvider>
     );
 

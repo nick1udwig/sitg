@@ -1,21 +1,30 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { DesktopOnly } from './components/DesktopOnly';
-import { Layout } from './components/Layout';
+import { LandingLayout } from './components/LandingLayout';
+import { OwnerLayout } from './components/OwnerLayout';
+import { ContributorLayout } from './components/ContributorLayout';
+import { LandingPage } from './pages/LandingPage';
+import { OwnerPage } from './pages/OwnerPage';
+import { ContributorPage } from './pages/ContributorPage';
 import { GatePage } from './pages/GatePage';
-import { OwnerSetupPage } from './pages/OwnerSetupPage';
-import { WalletPage } from './pages/WalletPage';
 
 export function App() {
   return (
     <DesktopOnly>
-      <Layout>
-        <Routes>
-          <Route path="/" element={<OwnerSetupPage />} />
-          <Route path="/wallet" element={<WalletPage />} />
+      <Routes>
+        <Route element={<LandingLayout />}>
+          <Route path="/" element={<LandingPage />} />
+        </Route>
+        <Route element={<OwnerLayout />}>
+          <Route path="/owner" element={<OwnerPage />} />
+        </Route>
+        <Route element={<ContributorLayout />}>
+          <Route path="/contributor" element={<ContributorPage />} />
           <Route path="/g/:gateToken" element={<GatePage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Layout>
+        </Route>
+        <Route path="/wallet" element={<Navigate to="/contributor" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
     </DesktopOnly>
   );
 }

@@ -23,6 +23,22 @@ function Bootstrapper({ children }: { children: ReactNode }) {
   const didInit = useRef(false);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const auth = params.get('auth');
+    const reason = params.get('reason');
+    if (auth === 'cancelled') {
+      if (reason === 'access_denied') {
+        pushNotice('info', 'GitHub sign-in was cancelled.');
+      } else {
+        pushNotice('error', 'GitHub sign-in failed. Please retry.');
+      }
+      params.delete('auth');
+      params.delete('reason');
+      const nextSearch = params.toString();
+      const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+      window.history.replaceState({}, '', nextUrl);
+    }
+
     let mounted = true;
 
     void getMe()
@@ -51,10 +67,13 @@ function Bootstrapper({ children }: { children: ReactNode }) {
 
     if (!didInit.current) {
       didInit.current = true;
-      if (!import.meta.env.VITE_WALLETCONNECT_PROJECT_ID) {
+      const path = window.location.pathname;
+      const isContributorRoute = path.startsWith('/contributor') || path.startsWith('/g/');
+      if (!import.meta.env.VITE_WALLETCONNECT_PROJECT_ID && isContributorRoute) {
         pushNotice('info', 'Set VITE_WALLETCONNECT_PROJECT_ID to fully enable WalletConnect.');
       }
-      if (!import.meta.env.VITE_GITHUB_APP_INSTALL_URL) {
+      const isOwnerRoute = path.startsWith('/owner');
+      if (!import.meta.env.VITE_GITHUB_APP_INSTALL_URL && isOwnerRoute) {
         pushNotice('info', 'Set VITE_GITHUB_APP_INSTALL_URL for owner onboarding install CTA.');
       }
     }

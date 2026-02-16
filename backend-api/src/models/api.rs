@@ -9,8 +9,9 @@ pub struct AuthStartQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct AuthCallbackQuery {
-    pub code: String,
-    pub state: String,
+    pub code: Option<String>,
+    pub state: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

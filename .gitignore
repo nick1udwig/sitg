@@ -4,3 +4,4 @@ frontend-web/tsconfig.tsbuildinfo
 **/target
 .e2e
 *.swp
+**/.env

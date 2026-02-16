@@ -1,17 +1,16 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { AppStateProvider } from '../state';
-import { OwnerSetupPage } from './OwnerSetupPage';
+import { OwnerPage } from './OwnerPage';
 
 describe('page smoke', () => {
-  it('renders owner setup shell', () => {
+  it('renders owner page pre-auth', () => {
     render(
       <AppStateProvider>
-        <OwnerSetupPage />
+        <OwnerPage />
       </AppStateProvider>
     );
 
-    expect(screen.getByText('Repository')).toBeTruthy();
     expect(screen.getByText('Sign in with GitHub')).toBeTruthy();
   });
 });

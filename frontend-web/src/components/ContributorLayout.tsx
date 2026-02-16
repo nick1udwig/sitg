@@ -1,11 +1,9 @@
-import { Link, useLocation } from 'react-router-dom';
+import { Outlet } from 'react-router-dom';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import type { ReactNode } from 'react';
 import { useAppState } from '../state';
 import { Notices } from './Notices';
 
-export function Layout({ children }: { children: ReactNode }) {
-  const location = useLocation();
+export function ContributorLayout() {
   const { state } = useAppState();
 
   return (
@@ -13,14 +11,7 @@ export function Layout({ children }: { children: ReactNode }) {
       <header className="topbar">
         <div className="topbar-left">
           <div className="brand">sitg</div>
-          <nav className="nav" aria-label="Primary">
-            <Link className={location.pathname === '/' ? 'active' : ''} to="/">
-              Setup
-            </Link>
-            <Link className={location.pathname.startsWith('/wallet') ? 'active' : ''} to="/wallet">
-              Wallet
-            </Link>
-          </nav>
+          <span className="nav-context">contributor</span>
         </div>
         <div className="topbar-right">
           {state.me ? (
@@ -38,7 +29,7 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </header>
       <Notices />
-      {children}
+      <Outlet />
     </>
   );
 }
