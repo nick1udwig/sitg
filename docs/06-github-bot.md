@@ -1,5 +1,8 @@
 # 06 GitHub Bot Contract
 
+> Superseded for the beta reset by `docs/14-centralized-bot-interfaces.md`.
+> Use this file only for historical context while deleting/replacing owner-run bot assumptions.
+
 ## Implementation
 
 - Language/runtime: TypeScript (Node.js).

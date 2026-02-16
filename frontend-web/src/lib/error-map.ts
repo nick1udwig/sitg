@@ -16,6 +16,13 @@ const CODE_MESSAGES: Record<string, string> = {
 export function toUserMessage(error: unknown): string {
   if (error && typeof error === 'object') {
     const apiError = error as ApiError;
+    if (
+      apiError.code === 'VALIDATION_ERROR'
+      && typeof apiError.message === 'string'
+      && apiError.message.toLowerCase().includes('github app is not installed')
+    ) {
+      return 'GitHub App is not installed for this repo owner yet. Install it, then try again.';
+    }
     if (apiError.code && CODE_MESSAGES[apiError.code]) {
       return CODE_MESSAGES[apiError.code];
     }

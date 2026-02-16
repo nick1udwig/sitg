@@ -52,6 +52,31 @@ struct GithubPermissionResponse {
     permission: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GithubInstallationsEnvelope {
+    installations: Vec<GithubInstallationItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubInstallationItem {
+    id: i64,
+    account: GithubInstallationAccount,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubInstallationAccount {
+    login: String,
+    #[serde(rename = "type")]
+    account_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GithubInstallationOption {
+    pub id: i64,
+    pub account_login: String,
+    pub account_type: String,
+}
+
 impl GithubOAuthService {
     fn can_write(permissions: Option<&GithubRepoPermissions>) -> bool {
         permissions
@@ -266,6 +291,43 @@ impl GithubOAuthService {
             full_name: repo.full_name,
             can_write: Self::can_write(repo.permissions.as_ref()),
         }))
+    }
+
+    pub async fn list_user_installations(
+        &self,
+        token: &str,
+    ) -> ApiResult<Vec<GithubInstallationOption>> {
+        let response = self
+            .client
+            .get("https://api.github.com/user/installations?per_page=100")
+            .bearer_auth(token)
+            .header("User-Agent", "sitg-backend")
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Unauthenticated);
+        }
+        if !response.status().is_success() {
+            return Err(ApiError::validation("GitHub installations listing failed"));
+        }
+
+        let payload = response
+            .json::<GithubInstallationsEnvelope>()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        Ok(payload
+            .installations
+            .into_iter()
+            .map(|it| GithubInstallationOption {
+                id: it.id,
+                account_login: it.account.login,
+                account_type: it.account.account_type,
+            })
+            .collect())
     }
 }
 

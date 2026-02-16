@@ -26,10 +26,10 @@ This folder is the top-level product and engineering spec for MVP.
 - If CoinGecko is unavailable at save time, backend uses last cached spot.
 - Verification is point-in-time: later stake changes do not retroactively invalidate an already-verified PR challenge.
 - Retention policy: keep `audit_events` and signature records for 12 months.
-- Deployment model: many repo owners can run their own bot workers.
-- Bot auth model: tenant-scoped bot credentials (`key_id` + HMAC secret), not a single global internal secret.
-- Backend authorizes bot requests by installation/repo binding to prevent cross-tenant actions.
-- Installation binding model: exactly one active bot client per GitHub installation.
+- Deployment model: SITG runs a centralized multi-tenant bot-worker fleet.
+- Bot auth model: service-owned bot credentials (`key_id` + HMAC secret) for centralized worker auth.
+- Backend authorizes internal bot requests by service key, replay protection, and installation/repo ownership data.
+- Installation sync model: backend is source of truth for installation and installation-repository mappings from GitHub webhook events.
 
 ## Document index
 
@@ -46,3 +46,5 @@ This folder is the top-level product and engineering spec for MVP.
 - `docs/11-e2e-harness.md`
 - `docs/12-test-coverage-checklist.md`
 - `docs/13-production-runbook.md`
+- `docs/14-centralized-bot-interfaces.md`
+- `docs/15-centralized-bot-work-plan.md`

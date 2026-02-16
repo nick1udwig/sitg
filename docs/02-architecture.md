@@ -1,5 +1,8 @@
 # 02 Architecture
 
+> Architecture assumptions for bot deployment are superseded by `docs/14-centralized-bot-interfaces.md` for the beta reset.
+> Treat owner-run bot notes below as legacy until this document is fully rewritten.
+
 ## Services
 
 1. `frontend-web` (TypeScript + Vite)

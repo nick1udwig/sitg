@@ -650,11 +650,42 @@ async fn put_repo_config(
         .fetch_optional(&state.pool)
         .await?;
 
-        let installation_id = installation_id.ok_or_else(|| {
-            ApiError::validation(
-                "GitHub App is not installed for this repository owner yet. Install the app and retry.",
+        let installation_id = if let Some(id) = installation_id {
+            id
+        } else {
+            let installations = state
+                .github_oauth_service
+                .list_user_installations(token)
+                .await?;
+            let matched = installations
+                .into_iter()
+                .find(|item| item.account_login.eq_ignore_ascii_case(owner_login));
+
+            let Some(matched) = matched else {
+                return Err(ApiError::validation(
+                    "GitHub App is not installed for this repository owner yet. Install the app and retry.",
+                ));
+            };
+
+            sqlx::query(
+                r#"
+                insert into github_installations (installation_id, account_login, account_type, created_at, updated_at)
+                values ($1, $2, $3, $4, $4)
+                on conflict (installation_id) do update
+                set account_login = excluded.account_login,
+                    account_type = excluded.account_type,
+                    updated_at = excluded.updated_at
+                "#,
             )
-        })?;
+            .bind(matched.id)
+            .bind(&matched.account_login)
+            .bind(&matched.account_type)
+            .bind(Utc::now())
+            .execute(&state.pool)
+            .await?;
+
+            matched.id
+        };
 
         (repo.full_name, installation_id, true)
     };

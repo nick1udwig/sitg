@@ -1,5 +1,8 @@
 # 13 Production Runbook
 
+> The bot deployment sections in this runbook are superseded by `docs/14-centralized-bot-interfaces.md` and `docs/15-centralized-bot-work-plan.md` for the beta reset.
+> Use this file for legacy reference until a centralized-bot runbook revision lands.
+
 This is the production deployment/run guide for SITG.
 
 ## What "production" means here

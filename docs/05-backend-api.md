@@ -1,5 +1,8 @@
 # 05 Backend API Contract (Rust)
 
+> Superseded for the beta reset by `docs/14-centralized-bot-interfaces.md`.
+> Use this file only for historical context while deleting/replacing `v1` bot endpoints.
+
 ## Protocol
 
 - JSON over HTTPS.
