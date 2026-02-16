@@ -2,40 +2,43 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { URL } from "node:url";
 import { BackendClient } from "./backend.js";
 import type { AppConfig } from "./config.js";
-import { DeadlineScheduler } from "./deadlines.js";
 import { GitHubClient } from "./github.js";
-import { DeliveryIdempotencyStore } from "./idempotency.js";
-import { BotStateStore } from "./persistence.js";
-import type { BotAction, DeadlineCheckResponse, NormalizedPrEvent, PrEventDecisionResponse } from "./types.js";
-import { buildDeliveryDedupKey, parsePullRequestEvent } from "./webhook.js";
+import type { BotAction, BotActionOutcome } from "./types.js";
+import { parseGitHubWebhookEvent } from "./webhook.js";
 
 type AppContext = {
   config: AppConfig;
   backend: BackendClient;
   github: GitHubClient;
-  dedupStore: DeliveryIdempotencyStore;
-  scheduler: DeadlineScheduler;
-  stateStore: BotStateStore;
   metrics: MetricsStore;
 };
 
 type MetricsStore = {
   webhookEventsTotal: number;
   webhookIgnoredTotal: number;
-  webhookDuplicateTotal: number;
-  webhookDecisionRequireStakeTotal: number;
-  webhookDecisionExemptTotal: number;
-  webhookDecisionAlreadyVerifiedTotal: number;
-  webhookDecisionIgnoreTotal: number;
-  deadlineRunTotal: number;
-  deadlineCloseTotal: number;
-  deadlineNoopTotal: number;
+  webhookPullRequestForwardedTotal: number;
+  webhookInstallationSyncForwardedTotal: number;
+  webhookIngestAcceptedTotal: number;
+  webhookIngestDuplicateTotal: number;
+  webhookIngestIgnoredTotal: number;
   outboxClaimTotal: number;
   outboxActionsClaimedTotal: number;
   outboxActionsSuccessTotal: number;
+  outboxActionsRetryableFailureTotal: number;
   outboxActionsFailedTotal: number;
   errorsTotal: number;
 };
+
+class BotActionExecutionError extends Error {
+  readonly outcome: Exclude<BotActionOutcome, "SUCCEEDED">;
+  readonly code: string;
+
+  constructor(message: string, outcome: Exclude<BotActionOutcome, "SUCCEEDED">, code: string) {
+    super(message);
+    this.outcome = outcome;
+    this.code = code;
+  }
+}
 
 const json = (res: ServerResponse, status: number, body: unknown): void => {
   res.statusCode = status;
@@ -76,167 +79,92 @@ const log = (
   }
 };
 
-const timeoutFallbackComment = (): string =>
-  "This PR was automatically closed because stake verification was not completed within 30 minutes.";
-
-const applyRequireStakeDecision = async (
-  ctx: AppContext,
-  event: NormalizedPrEvent,
-  decision: PrEventDecisionResponse,
-): Promise<void> => {
-  const challenge = decision.challenge;
-  if (!challenge) {
-    throw new Error("Backend decision REQUIRE_STAKE missing challenge payload");
+const incrementIngestStatus = (metrics: MetricsStore, ingestStatus: string): void => {
+  switch (ingestStatus) {
+    case "ACCEPTED":
+      metrics.webhookIngestAcceptedTotal += 1;
+      return;
+    case "DUPLICATE":
+      metrics.webhookIngestDuplicateTotal += 1;
+      return;
+    case "IGNORED":
+      metrics.webhookIngestIgnoredTotal += 1;
+      return;
+    default:
+      throw new Error(`Unsupported ingest status: ${ingestStatus}`);
   }
-
-  await ctx.github.upsertGateComment(
-    event.installation_id,
-    event.repository.full_name,
-    event.pull_request.number,
-    challenge.id,
-    challenge.comment_markdown,
-  );
-
-  if (!ctx.config.enableLocalDeadlineTimers) {
-    return;
-  }
-
-  const scheduled = {
-    challengeId: challenge.id,
-    installationId: event.installation_id,
-    repoFullName: event.repository.full_name,
-    prNumber: event.pull_request.number,
-    deadlineAt: challenge.deadline_at,
-  };
-  ctx.scheduler.ensure(scheduled);
-  ctx.stateStore.putDeadline(scheduled);
 };
 
-const applyExemptDecision = async (
-  ctx: AppContext,
-  event: NormalizedPrEvent,
-  decision: PrEventDecisionResponse,
-): Promise<void> => {
-  if (!ctx.config.exemptCommentEnabled || !decision.challenge?.id) {
-    return;
+const ensureActionPayload = (action: BotAction): void => {
+  if (!action.payload || typeof action.payload.comment_markdown !== "string" || !action.payload.comment_markdown.trim()) {
+    throw new BotActionExecutionError(
+      `Action ${action.id} missing payload.comment_markdown`,
+      "FAILED",
+      "INVALID_ACTION_PAYLOAD",
+    );
   }
-  await ctx.github.upsertGateComment(
-    event.installation_id,
-    event.repository.full_name,
-    event.pull_request.number,
-    decision.challenge.id,
-    "This PR author is exempt from stake requirements for this repository.",
-  );
-};
-
-const isCloseDecision = (response: DeadlineCheckResponse): boolean => response.action === "CLOSE_PR";
-
-const resolveRepoFullName = async (
-  ctx: AppContext,
-  installationId: number,
-  repoId: number,
-  fallback?: string,
-): Promise<string> => {
-  const remembered = ctx.stateStore.getRepoInstallation(repoId)?.fullName;
-  if (remembered) {
-    return remembered;
+  if (!action.payload.comment_marker || !action.payload.comment_marker.trim()) {
+    throw new BotActionExecutionError(
+      `Action ${action.id} missing payload.comment_marker`,
+      "FAILED",
+      "INVALID_ACTION_PAYLOAD",
+    );
   }
-  if (fallback) {
-    return fallback;
+  if (!action.repo_full_name || typeof action.repo_full_name !== "string") {
+    throw new BotActionExecutionError(`Action ${action.id} missing repo_full_name`, "FAILED", "INVALID_ACTION_PAYLOAD");
   }
-  const fullName = await ctx.github.getRepositoryFullNameById(installationId, repoId);
-  ctx.stateStore.rememberRepoInstallation(repoId, installationId, fullName);
-  return fullName;
-};
-
-const executeClosePr = async (
-  ctx: AppContext,
-  installationId: number,
-  repoId: number,
-  prNumber: number,
-  challengeId: string,
-  commentMarkdown: string,
-): Promise<void> => {
-  const remembered = ctx.stateStore.getRepoInstallation(repoId);
-  const repoFullName = await resolveRepoFullName(ctx, installationId, repoId, remembered?.fullName);
-  await ctx.github.closePullRequest(installationId, repoFullName, prNumber);
-  await ctx.github.upsertTimeoutComment(installationId, repoFullName, prNumber, challengeId, commentMarkdown);
-};
-
-const resolveInstallationIdForRepo = (ctx: AppContext, repoId: number): number | null => {
-  const remembered = ctx.stateStore.getRepoInstallation(repoId)?.installationId;
-  if (remembered) {
-    return remembered;
+  if (typeof action.installation_id !== "number" || action.installation_id <= 0) {
+    throw new BotActionExecutionError(
+      `Action ${action.id} has invalid installation_id`,
+      "FAILED",
+      "INVALID_ACTION_PAYLOAD",
+    );
   }
-  if (ctx.config.defaultInstallationId) {
-    return ctx.config.defaultInstallationId;
+  if (typeof action.github_pr_number !== "number" || action.github_pr_number <= 0) {
+    throw new BotActionExecutionError(
+      `Action ${action.id} has invalid github_pr_number`,
+      "FAILED",
+      "INVALID_ACTION_PAYLOAD",
+    );
   }
-  return null;
-};
-
-const runDeadlineForChallenge = async (ctx: AppContext, challengeId: string): Promise<void> => {
-  ctx.metrics.deadlineRunTotal += 1;
-  const scheduled = ctx.scheduler.get(challengeId);
-  const deadlineResponse = await ctx.backend.deadlineCheck(challengeId);
-
-  if (!isCloseDecision(deadlineResponse)) {
-    ctx.metrics.deadlineNoopTotal += 1;
-    ctx.scheduler.cancel(challengeId);
-    ctx.stateStore.removeDeadline(challengeId);
-    log("info", "deadline.noop", { challenge_id: challengeId });
-    return;
-  }
-
-  const close = deadlineResponse.close;
-  if (!close) {
-    throw new Error(`Deadline response for ${challengeId} missing close payload`);
-  }
-
-  const remembered = ctx.stateStore.getRepoInstallation(close.github_repo_id);
-  const installationId = scheduled?.installationId ?? remembered?.installationId ?? ctx.config.defaultInstallationId;
-  if (!installationId) {
-    throw new Error(`Missing installation mapping for repo ${close.github_repo_id}; cannot close PR`);
-  }
-
-  await executeClosePr(
-    ctx,
-    installationId,
-    close.github_repo_id,
-    close.github_pr_number,
-    challengeId,
-    close.comment_markdown ?? timeoutFallbackComment(),
-  );
-
-  ctx.scheduler.cancel(challengeId);
-  ctx.stateStore.removeDeadline(challengeId);
-  ctx.metrics.deadlineCloseTotal += 1;
-  log("info", "deadline.closed_pr", {
-    challenge_id: challengeId,
-    repo_id: close.github_repo_id,
-    pr_number: close.github_pr_number,
-  });
 };
 
 const executeOutboxAction = async (ctx: AppContext, action: BotAction): Promise<void> => {
-  if (action.action_type !== "CLOSE_PR") {
-    throw new Error(`Unsupported bot action type: ${action.action_type}`);
-  }
+  ensureActionPayload(action);
 
-  const installationId = resolveInstallationIdForRepo(ctx, action.github_repo_id);
-  if (!installationId) {
-    throw new Error(
-      `Missing installation mapping for repo ${action.github_repo_id}; set DEFAULT_INSTALLATION_ID or process webhook for this repo first`,
+  if (action.action_type === "UPSERT_PR_COMMENT") {
+    await ctx.github.upsertPrComment(
+      action.installation_id,
+      action.repo_full_name,
+      action.github_pr_number,
+      action.payload.comment_marker,
+      action.payload.comment_markdown,
     );
+    return;
   }
 
-  await executeClosePr(
-    ctx,
-    installationId,
-    action.github_repo_id,
-    action.github_pr_number,
-    action.challenge_id,
-    action.payload?.comment_markdown ?? timeoutFallbackComment(),
-  );
+  if (action.action_type === "CLOSE_PR_WITH_COMMENT") {
+    await ctx.github.closePullRequest(action.installation_id, action.repo_full_name, action.github_pr_number);
+    await ctx.github.upsertPrComment(
+      action.installation_id,
+      action.repo_full_name,
+      action.github_pr_number,
+      action.payload.comment_marker,
+      action.payload.comment_markdown,
+    );
+    return;
+  }
+
+  throw new BotActionExecutionError(`Unsupported bot action type: ${action.action_type}`, "FAILED", "UNSUPPORTED_ACTION");
+};
+
+const classifyActionError = (error: unknown): BotActionExecutionError => {
+  if (error instanceof BotActionExecutionError) {
+    return error;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return new BotActionExecutionError(message, "RETRYABLE_FAILURE", "EXECUTION_ERROR");
 };
 
 const runOutboxPollTick = async (ctx: AppContext): Promise<void> => {
@@ -255,23 +183,36 @@ const runOutboxPollTick = async (ctx: AppContext): Promise<void> => {
   for (const action of actions) {
     try {
       await executeOutboxAction(ctx, action);
-      await ctx.backend.postBotActionResult(action.id, ctx.config.workerId, true, null, null);
+      await ctx.backend.postBotActionResult(action.id, ctx.config.workerId, "SUCCEEDED", null, null);
       ctx.metrics.outboxActionsSuccessTotal += 1;
       log("info", "outbox.action_succeeded", {
         action_id: action.id,
         action_type: action.action_type,
-        challenge_id: action.challenge_id,
       });
     } catch (error) {
-      ctx.metrics.outboxActionsFailedTotal += 1;
-      const reason = error instanceof Error ? error.message : String(error);
+      const classified = classifyActionError(error);
+      if (classified.outcome === "FAILED") {
+        ctx.metrics.outboxActionsFailedTotal += 1;
+      } else {
+        ctx.metrics.outboxActionsRetryableFailureTotal += 1;
+      }
+
       log("error", "outbox.action_failed", {
         action_id: action.id,
         action_type: action.action_type,
-        error: reason,
+        outcome: classified.outcome,
+        failure_code: classified.code,
+        error: classified.message,
       });
+
       try {
-        await ctx.backend.postBotActionResult(action.id, ctx.config.workerId, false, reason, true);
+        await ctx.backend.postBotActionResult(
+          action.id,
+          ctx.config.workerId,
+          classified.outcome,
+          classified.code,
+          classified.message,
+        );
       } catch (ackError) {
         ctx.metrics.errorsTotal += 1;
         log("error", "outbox.ack_failed", {
@@ -285,7 +226,7 @@ const runOutboxPollTick = async (ctx: AppContext): Promise<void> => {
 
 const handleWebhook = async (ctx: AppContext, req: IncomingMessage, res: ServerResponse): Promise<void> => {
   const rawBody = await readBody(req);
-  const event = parsePullRequestEvent(req.headers, rawBody, ctx.config.githubWebhookSecret);
+  const event = parseGitHubWebhookEvent(req.headers, rawBody, ctx.config.githubWebhookSecret);
   ctx.metrics.webhookEventsTotal += 1;
 
   if (!event) {
@@ -294,69 +235,31 @@ const handleWebhook = async (ctx: AppContext, req: IncomingMessage, res: ServerR
     return;
   }
 
-  const dedupKey = buildDeliveryDedupKey(event);
-  if (ctx.dedupStore.has(dedupKey)) {
-    ctx.metrics.webhookDuplicateTotal += 1;
-    json(res, 200, { status: "duplicate" });
+  if (event.event_name === "pull_request") {
+    ctx.metrics.webhookPullRequestForwardedTotal += 1;
+    const response = await ctx.backend.postPullRequestEvent(event.payload);
+    incrementIngestStatus(ctx.metrics, response.ingest_status);
+    log("info", "webhook.pull_request_forwarded", {
+      delivery_id: event.payload.delivery_id,
+      repo_full_name: event.payload.repository.full_name,
+      pr_number: event.payload.pull_request.number,
+      ingest_status: response.ingest_status,
+    });
+    json(res, 200, { status: "ok", ingest_status: response.ingest_status });
     return;
   }
 
-  ctx.stateStore.rememberRepoInstallation(event.repository.id, event.installation_id, event.repository.full_name);
-
-  const decision = await ctx.backend.postPrEvent(event);
-  switch (decision.decision) {
-    case "REQUIRE_STAKE":
-      ctx.metrics.webhookDecisionRequireStakeTotal += 1;
-      await applyRequireStakeDecision(ctx, event, decision);
-      break;
-    case "EXEMPT":
-      ctx.metrics.webhookDecisionExemptTotal += 1;
-      await applyExemptDecision(ctx, event, decision);
-      break;
-    case "ALREADY_VERIFIED":
-      ctx.metrics.webhookDecisionAlreadyVerifiedTotal += 1;
-      break;
-    case "IGNORE":
-      ctx.metrics.webhookDecisionIgnoreTotal += 1;
-      break;
-    default:
-      throw new Error(`Unsupported backend decision: ${String((decision as { decision: string }).decision)}`);
-  }
-
-  ctx.dedupStore.add(dedupKey);
-  log("info", "webhook.decision_applied", {
-    delivery_id: event.delivery_id,
-    action: event.action,
-    repo_full_name: event.repository.full_name,
-    pr_number: event.pull_request.number,
-    decision: decision.decision,
+  ctx.metrics.webhookInstallationSyncForwardedTotal += 1;
+  const response = await ctx.backend.postInstallationSyncEvent(event.payload);
+  incrementIngestStatus(ctx.metrics, response.ingest_status);
+  log("info", "webhook.installation_sync_forwarded", {
+    delivery_id: event.payload.delivery_id,
+    event_name: event.payload.event_name,
+    action: event.payload.action,
+    installation_id: event.payload.installation.id,
+    ingest_status: response.ingest_status,
   });
-  json(res, 200, { status: "ok", decision: decision.decision });
-};
-
-const isAuthorizedInternalRequest = (req: IncomingMessage, token?: string): boolean => {
-  if (!token) {
-    return true;
-  }
-  const headerValue = req.headers["x-internal-token"];
-  const provided = Array.isArray(headerValue) ? headerValue[0] : headerValue;
-  return provided === token;
-};
-
-const handleDeadlineRoute = async (ctx: AppContext, req: IncomingMessage, res: ServerResponse, path: string): Promise<void> => {
-  if (!isAuthorizedInternalRequest(req, ctx.config.deadlineInternalToken)) {
-    json(res, 401, { error: "unauthorized" });
-    return;
-  }
-
-  const match = path.match(/^\/internal\/v1\/deadlines\/([^/]+)\/run$/);
-  if (!match) {
-    json(res, 404, { error: "not_found" });
-    return;
-  }
-  const challengeId = decodeURIComponent(match[1]);
-  await runDeadlineForChallenge(ctx, challengeId);
-  json(res, 200, { status: "ok" });
+  json(res, 200, { status: "ok", ingest_status: response.ingest_status });
 };
 
 export const createAppServer = (config: AppConfig) => {
@@ -371,57 +274,29 @@ export const createAppServer = (config: AppConfig) => {
     privateKeyPem: config.githubAppPrivateKey,
     apiBaseUrl: config.githubApiBaseUrl,
   });
-  const stateStore = new BotStateStore(config.stateFilePath);
+
   const metrics: MetricsStore = {
     webhookEventsTotal: 0,
     webhookIgnoredTotal: 0,
-    webhookDuplicateTotal: 0,
-    webhookDecisionRequireStakeTotal: 0,
-    webhookDecisionExemptTotal: 0,
-    webhookDecisionAlreadyVerifiedTotal: 0,
-    webhookDecisionIgnoreTotal: 0,
-    deadlineRunTotal: 0,
-    deadlineCloseTotal: 0,
-    deadlineNoopTotal: 0,
+    webhookPullRequestForwardedTotal: 0,
+    webhookInstallationSyncForwardedTotal: 0,
+    webhookIngestAcceptedTotal: 0,
+    webhookIngestDuplicateTotal: 0,
+    webhookIngestIgnoredTotal: 0,
     outboxClaimTotal: 0,
     outboxActionsClaimedTotal: 0,
     outboxActionsSuccessTotal: 0,
+    outboxActionsRetryableFailureTotal: 0,
     outboxActionsFailedTotal: 0,
     errorsTotal: 0,
   };
-  let appCtx: AppContext;
 
-  const scheduler = new DeadlineScheduler(async (challengeId: string) => {
-    await runDeadlineForChallenge(appCtx, challengeId);
-  });
-
-  appCtx = {
+  const appCtx: AppContext = {
     config,
     backend,
     github,
-    dedupStore: new DeliveryIdempotencyStore(24 * 60 * 60 * 1000, stateStore),
-    scheduler,
-    stateStore,
     metrics,
   };
-
-  const pendingDeadlines = stateStore.getPendingDeadlines();
-  if (config.enableLocalDeadlineTimers) {
-    for (const pending of pendingDeadlines) {
-      scheduler.ensure(pending);
-    }
-  }
-  if (pendingDeadlines.length > 0) {
-    log("info", "startup.deadlines_loaded", {
-      count: pendingDeadlines.length,
-      local_timers_enabled: config.enableLocalDeadlineTimers,
-    });
-  }
-  log("info", "startup.state_store", {
-    mode: "file",
-    path: config.stateFilePath,
-    single_instance_only: true,
-  });
 
   if (config.outboxPollingEnabled) {
     let running = false;
@@ -465,10 +340,6 @@ export const createAppServer = (config: AppConfig) => {
         await handleWebhook(appCtx, req, res);
         return;
       }
-      if (method === "POST" && url.pathname.startsWith("/internal/v1/deadlines/")) {
-        await handleDeadlineRoute(appCtx, req, res, url.pathname);
-        return;
-      }
       if (method === "GET" && url.pathname === "/healthz") {
         json(res, 200, { status: "ok" });
         return;
@@ -482,28 +353,24 @@ export const createAppServer = (config: AppConfig) => {
             `sitg_bot_webhook_events_total ${appCtx.metrics.webhookEventsTotal}`,
             "# TYPE sitg_bot_webhook_ignored_total counter",
             `sitg_bot_webhook_ignored_total ${appCtx.metrics.webhookIgnoredTotal}`,
-            "# TYPE sitg_bot_webhook_duplicate_total counter",
-            `sitg_bot_webhook_duplicate_total ${appCtx.metrics.webhookDuplicateTotal}`,
-            "# TYPE sitg_bot_webhook_decision_require_stake_total counter",
-            `sitg_bot_webhook_decision_require_stake_total ${appCtx.metrics.webhookDecisionRequireStakeTotal}`,
-            "# TYPE sitg_bot_webhook_decision_exempt_total counter",
-            `sitg_bot_webhook_decision_exempt_total ${appCtx.metrics.webhookDecisionExemptTotal}`,
-            "# TYPE sitg_bot_webhook_decision_already_verified_total counter",
-            `sitg_bot_webhook_decision_already_verified_total ${appCtx.metrics.webhookDecisionAlreadyVerifiedTotal}`,
-            "# TYPE sitg_bot_webhook_decision_ignore_total counter",
-            `sitg_bot_webhook_decision_ignore_total ${appCtx.metrics.webhookDecisionIgnoreTotal}`,
-            "# TYPE sitg_bot_deadline_run_total counter",
-            `sitg_bot_deadline_run_total ${appCtx.metrics.deadlineRunTotal}`,
-            "# TYPE sitg_bot_deadline_close_total counter",
-            `sitg_bot_deadline_close_total ${appCtx.metrics.deadlineCloseTotal}`,
-            "# TYPE sitg_bot_deadline_noop_total counter",
-            `sitg_bot_deadline_noop_total ${appCtx.metrics.deadlineNoopTotal}`,
+            "# TYPE sitg_bot_webhook_pull_request_forwarded_total counter",
+            `sitg_bot_webhook_pull_request_forwarded_total ${appCtx.metrics.webhookPullRequestForwardedTotal}`,
+            "# TYPE sitg_bot_webhook_installation_sync_forwarded_total counter",
+            `sitg_bot_webhook_installation_sync_forwarded_total ${appCtx.metrics.webhookInstallationSyncForwardedTotal}`,
+            "# TYPE sitg_bot_webhook_ingest_accepted_total counter",
+            `sitg_bot_webhook_ingest_accepted_total ${appCtx.metrics.webhookIngestAcceptedTotal}`,
+            "# TYPE sitg_bot_webhook_ingest_duplicate_total counter",
+            `sitg_bot_webhook_ingest_duplicate_total ${appCtx.metrics.webhookIngestDuplicateTotal}`,
+            "# TYPE sitg_bot_webhook_ingest_ignored_total counter",
+            `sitg_bot_webhook_ingest_ignored_total ${appCtx.metrics.webhookIngestIgnoredTotal}`,
             "# TYPE sitg_bot_outbox_claim_total counter",
             `sitg_bot_outbox_claim_total ${appCtx.metrics.outboxClaimTotal}`,
             "# TYPE sitg_bot_outbox_actions_claimed_total counter",
             `sitg_bot_outbox_actions_claimed_total ${appCtx.metrics.outboxActionsClaimedTotal}`,
             "# TYPE sitg_bot_outbox_actions_success_total counter",
             `sitg_bot_outbox_actions_success_total ${appCtx.metrics.outboxActionsSuccessTotal}`,
+            "# TYPE sitg_bot_outbox_actions_retryable_failure_total counter",
+            `sitg_bot_outbox_actions_retryable_failure_total ${appCtx.metrics.outboxActionsRetryableFailureTotal}`,
             "# TYPE sitg_bot_outbox_actions_failed_total counter",
             `sitg_bot_outbox_actions_failed_total ${appCtx.metrics.outboxActionsFailedTotal}`,
             "# TYPE sitg_bot_errors_total counter",

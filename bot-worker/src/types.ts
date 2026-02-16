@@ -22,51 +22,76 @@ export type NormalizedPrEvent = {
   event_time: string;
 };
 
-export type BackendDecision = "IGNORE" | "EXEMPT" | "ALREADY_VERIFIED" | "REQUIRE_STAKE";
+export type InstallationAccountType = "User" | "Organization";
 
-export type PrEventDecisionResponse = {
-  decision: BackendDecision;
-  challenge?: {
-    id: string;
-    gate_url: string;
-    deadline_at: string;
-    comment_markdown: string;
+export type InstallationEventName = "installation" | "installation_repositories";
+
+export type InstallationAction = "created" | "deleted" | "suspend" | "unsuspend";
+
+export type InstallationRepositoriesAction = "added" | "removed";
+
+export type InstallationSyncAction = InstallationAction | InstallationRepositoriesAction;
+
+export type InstallationRepositoryRef = {
+  id: number;
+  full_name: string;
+};
+
+export type NormalizedInstallationSyncEvent = {
+  delivery_id: string;
+  event_time: string;
+  event_name: InstallationEventName;
+  action: InstallationSyncAction;
+  installation: {
+    id: number;
+    account_login: string;
+    account_type: InstallationAccountType;
   };
+  repositories_added: InstallationRepositoryRef[];
+  repositories_removed: InstallationRepositoryRef[];
+  repositories: InstallationRepositoryRef[];
 };
 
-export type DeadlineCheckResponse = {
-  action?: string;
-  close?: {
-    github_repo_id: number;
-    github_pr_number: number;
-    comment_markdown: string;
-  } | null;
+export type IngestStatus = "ACCEPTED" | "DUPLICATE" | "IGNORED";
+
+export type PullRequestIngestResponse = {
+  ingest_status: IngestStatus;
+  challenge_id: string | null;
+  enqueued_actions: number;
 };
 
-export type ScheduledDeadline = {
-  challengeId: string;
-  installationId: number;
-  repoFullName: string;
-  prNumber: number;
-  deadlineAt: string;
+export type InstallationSyncIngestResponse = {
+  ingest_status: IngestStatus;
+  updated_installation_id: number;
+  updated_repositories: number;
 };
 
-export type BotActionType = "CLOSE_PR";
+export type BotActionType = "UPSERT_PR_COMMENT" | "CLOSE_PR_WITH_COMMENT";
+
+export type BotActionPayload = {
+  comment_markdown: string;
+  comment_marker: string;
+  reason?: string;
+};
 
 export type BotAction = {
   id: string;
   action_type: BotActionType;
-  challenge_id: string;
+  installation_id: number;
   github_repo_id: number;
+  repo_full_name: string;
   github_pr_number: number;
-  payload: {
-    comment_markdown?: string;
-  };
+  challenge_id: string | null;
+  payload: BotActionPayload;
+  attempts: number;
+  created_at: string;
 };
 
 export type BotActionsClaimResponse = {
   actions: BotAction[];
 };
+
+export type BotActionOutcome = "SUCCEEDED" | "RETRYABLE_FAILURE" | "FAILED";
 
 export type BotActionResultStatus = "DONE" | "PENDING" | "FAILED";
 

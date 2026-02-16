@@ -2,20 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
-import { buildDeliveryDedupKey, parsePullRequestEvent } from "../src/webhook.js";
+import { parseGitHubWebhookEvent } from "../src/webhook.js";
 
-const makeSignedEvent = (payload: object, secret = "secret") => {
+const makeSignedEvent = (event: string, deliveryId: string, payload: object, secret = "secret") => {
   const raw = Buffer.from(JSON.stringify(payload));
   const digest = createHmac("sha256", secret).update(raw).digest("hex");
   const headers: IncomingHttpHeaders = {
     "x-hub-signature-256": `sha256=${digest}`,
-    "x-github-event": "pull_request",
-    "x-github-delivery": "delivery-1",
+    "x-github-event": event,
+    "x-github-delivery": deliveryId,
   };
   return { raw, headers, secret };
 };
 
-test("parsePullRequestEvent returns normalized event for supported action", () => {
+test("parseGitHubWebhookEvent returns normalized pull_request event", () => {
   const payload = {
     action: "opened",
     installation: { id: 123 },
@@ -29,17 +29,51 @@ test("parsePullRequestEvent returns normalized event for supported action", () =
       head: { sha: "abc123" },
     },
   };
-  const { raw, headers, secret } = makeSignedEvent(payload);
-  const event = parsePullRequestEvent(headers, raw, secret, "2026-02-13T00:00:00.000Z");
+  const { raw, headers, secret } = makeSignedEvent("pull_request", "delivery-1", payload);
+  const parsed = parseGitHubWebhookEvent(headers, raw, secret, "2026-02-13T00:00:00.000Z");
 
-  assert.ok(event);
-  assert.equal(event?.action, "opened");
-  assert.equal(event?.repository.full_name, "org/repo");
-  assert.equal(event?.pull_request.number, 42);
-  assert.equal(event?.event_time, "2026-02-13T00:00:00.000Z");
+  assert.ok(parsed);
+  assert.equal(parsed?.event_name, "pull_request");
+  if (!parsed || parsed.event_name !== "pull_request") {
+    throw new Error("expected pull_request event");
+  }
+  assert.equal(parsed.payload.action, "opened");
+  assert.equal(parsed.payload.repository.full_name, "org/repo");
+  assert.equal(parsed.payload.pull_request.number, 42);
+  assert.equal(parsed.payload.event_time, "2026-02-13T00:00:00.000Z");
 });
 
-test("parsePullRequestEvent ignores unsupported action", () => {
+test("parseGitHubWebhookEvent returns normalized installation_repositories event", () => {
+  const payload = {
+    action: "added",
+    installation: {
+      id: 123,
+      account: {
+        login: "org",
+        type: "Organization",
+      },
+    },
+    repositories_added: [{ id: 456, full_name: "org/repo" }],
+    repositories_removed: [],
+  };
+
+  const { raw, headers, secret } = makeSignedEvent("installation_repositories", "delivery-2", payload);
+  const parsed = parseGitHubWebhookEvent(headers, raw, secret, "2026-02-13T00:00:00.000Z");
+
+  assert.ok(parsed);
+  assert.equal(parsed?.event_name, "installation_repositories");
+  if (!parsed || parsed.event_name !== "installation_repositories") {
+    throw new Error("expected installation_repositories event");
+  }
+
+  assert.equal(parsed.payload.action, "added");
+  assert.equal(parsed.payload.installation.id, 123);
+  assert.equal(parsed.payload.installation.account_login, "org");
+  assert.equal(parsed.payload.repositories_added.length, 1);
+  assert.equal(parsed.payload.repositories_added[0]?.full_name, "org/repo");
+});
+
+test("parseGitHubWebhookEvent ignores unsupported action", () => {
   const payload = {
     action: "closed",
     installation: { id: 1 },
@@ -52,11 +86,11 @@ test("parsePullRequestEvent ignores unsupported action", () => {
       head: { sha: "def456" },
     },
   };
-  const { raw, headers, secret } = makeSignedEvent(payload);
-  assert.equal(parsePullRequestEvent(headers, raw, secret), null);
+  const { raw, headers, secret } = makeSignedEvent("pull_request", "delivery-3", payload);
+  assert.equal(parseGitHubWebhookEvent(headers, raw, secret), null);
 });
 
-test("parsePullRequestEvent rejects invalid signature", () => {
+test("parseGitHubWebhookEvent rejects invalid signature", () => {
   const payload = {
     action: "opened",
     installation: { id: 1 },
@@ -73,26 +107,7 @@ test("parsePullRequestEvent rejects invalid signature", () => {
   const headers: IncomingHttpHeaders = {
     "x-hub-signature-256": "sha256=00",
     "x-github-event": "pull_request",
-    "x-github-delivery": "delivery-1",
+    "x-github-delivery": "delivery-4",
   };
-  assert.equal(parsePullRequestEvent(headers, raw, "secret"), null);
-});
-
-test("buildDeliveryDedupKey uses delivery/action/repo/pr", () => {
-  const dedup = buildDeliveryDedupKey({
-    delivery_id: "d",
-    installation_id: 1,
-    action: "reopened",
-    repository: { id: 22, full_name: "org/repo" },
-    pull_request: {
-      number: 11,
-      id: 99,
-      html_url: "x",
-      user: { id: 5, login: "u" },
-      head_sha: "sha",
-      is_draft: false,
-    },
-    event_time: "t",
-  });
-  assert.equal(dedup, "d:reopened:22:11");
+  assert.equal(parseGitHubWebhookEvent(headers, raw, "secret"), null);
 });

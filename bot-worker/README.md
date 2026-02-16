@@ -3,49 +3,52 @@
 TypeScript GitHub App worker for SITG.
 
 Production runbook: `docs/13-production-runbook.md`
+Canonical interface contract: `docs/14-centralized-bot-interfaces.md`
 
 ## Endpoints
 
 - `POST /webhooks/github`:
   - Verifies GitHub webhook signature (`X-Hub-Signature-256`).
-  - Handles `pull_request` actions: `opened`, `reopened`, `synchronize`.
-  - Forwards normalized payload to backend `POST /internal/v1/pr-events`.
-  - Applies backend decision (`REQUIRE_STAKE`, `EXEMPT`, `ALREADY_VERIFIED`, `IGNORE`).
-- `POST /internal/v1/deadlines/{challenge_id}/run`:
-  - Runs backend deadline check (`POST /internal/v1/challenges/{challenge_id}/deadline-check`).
-  - If backend returns `action: CLOSE_PR`, closes PR and posts timeout comment.
-  - Intended as optional/manual fallback.
+  - Handles events:
+    - `pull_request` actions: `opened`, `reopened`, `synchronize`
+    - `installation` actions: `created`, `deleted`, `suspend`, `unsuspend`
+    - `installation_repositories` actions: `added`, `removed`
+  - Forwards normalized payloads to backend:
+    - `POST /internal/v2/github/events/pull-request`
+    - `POST /internal/v2/github/events/installation-sync`
 - `GET /healthz`
-- `GET /metrics`:
-  - Prometheus-style counters for webhook/deadline/error paths.
+- `GET /metrics`
 
-Primary deadline mode:
+## Runtime model
 
-- Bot polls backend outbox via `POST /internal/v1/bot-actions/claim`.
-- For each `CLOSE_PR`, bot executes GitHub close/comment and acks via `POST /internal/v1/bot-actions/{action_id}/result`.
+- Worker is stateless for correctness.
+- No local file-backed dedup, deadline scheduling, or repo-install mapping is required.
+- Backend is source of truth for deduplication, installation mappings, challenge state, and outbox lifecycle.
 
-## Runtime state
+## Outbox execution
 
-Bot state is persisted to `BOT_STATE_FILE`:
-
-- idempotency keys (delivery/action/repo/pr),
-- pending deadline jobs,
-- repository installation mapping (`repo_id -> installation_id/full_name`).
-
-This allows restart-safe dedup and deadline recovery.
-
-Note: file-based state is single-instance only. For horizontal scaling, move state to a shared store.
+- Polls backend: `POST /internal/v2/bot-actions/claim`
+- Executes action types:
+  - `UPSERT_PR_COMMENT`
+  - `CLOSE_PR_WITH_COMMENT`
+- Reports result: `POST /internal/v2/bot-actions/{action_id}/result`
+  - outcomes: `SUCCEEDED`, `RETRYABLE_FAILURE`, `FAILED`
 
 ## Setup
 
-1. Copy `.env.example` to your environment.
-   - Set `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_HMAC_SECRET` from bot key provisioning in SaaS.
-   - Backend internal auth uses `x-sitg-key-id`, `x-sitg-timestamp`, and `x-sitg-signature`.
-   - `BACKEND_SERVICE_TOKEN` is optional and only used if your backend also accepts bearer auth.
-   - Optional: set `GITHUB_API_BASE_URL` to a mock API for local E2E.
-   - Set `WORKER_ID` to a stable identifier per running worker instance.
-   - Keep `OUTBOX_POLLING_ENABLED=true` for normal operation.
-   - `ENABLE_LOCAL_DEADLINE_TIMERS` should usually remain `false`.
+1. Set environment variables:
+   - `GITHUB_WEBHOOK_SECRET`
+   - `GITHUB_APP_ID`
+   - `GITHUB_APP_PRIVATE_KEY`
+   - `BACKEND_BASE_URL`
+   - `BACKEND_BOT_KEY_ID`
+   - `BACKEND_INTERNAL_HMAC_SECRET`
+   - Optional: `BACKEND_SERVICE_TOKEN`
+   - Optional: `GITHUB_API_BASE_URL` (for local mock API)
+   - Optional: `WORKER_ID`
+   - Optional: `OUTBOX_POLLING_ENABLED` (`true` by default)
+   - Optional: `OUTBOX_POLL_INTERVAL_MS` (default `5000`)
+   - Optional: `OUTBOX_CLAIM_LIMIT` (default `25`)
 2. Install dependencies:
    - `npm install`
 3. Build:
@@ -59,4 +62,4 @@ Note: file-based state is single-instance only. For horizontal scaling, move sta
 
 ## Operations
 
-- See `bot-worker/OPERATIONS.md` for alerting, retry/idempotency behavior, and key rotation steps.
+- See `bot-worker/OPERATIONS.md` for alerting, retry behavior, and key rotation steps.

@@ -29,6 +29,15 @@ pub struct RepoOptionResponse {
     pub full_name: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RepoGithubAppStatusResponse {
+    pub installed: bool,
+    pub installation_id: Option<i64>,
+    pub installation_account_login: Option<String>,
+    pub installation_account_type: Option<String>,
+    pub repo_connected: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RepoConfigPutRequest {
     pub input_mode: String,
@@ -160,12 +169,12 @@ pub struct WalletLinkConfirmResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct InternalPrEventRequest {
-    pub delivery_id: Uuid,
+    pub delivery_id: String,
+    pub event_time: DateTime<Utc>,
     pub installation_id: i64,
     pub action: String,
     pub repository: InternalRepository,
     pub pull_request: InternalPullRequest,
-    pub event_time: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +184,7 @@ pub struct InternalRepository {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct InternalPullRequest {
     pub number: i32,
     pub id: i64,
@@ -192,29 +202,38 @@ pub struct InternalPrUser {
 
 #[derive(Debug, Serialize)]
 pub struct InternalPrEventResponse {
-    pub decision: String,
-    pub challenge: Option<InternalChallengePayload>,
+    pub ingest_status: String,
+    pub challenge_id: Option<Uuid>,
+    pub enqueued_actions: i32,
 }
 
-#[derive(Debug, Serialize)]
-pub struct InternalChallengePayload {
-    pub id: Uuid,
-    pub gate_url: String,
-    pub deadline_at: DateTime<Utc>,
-    pub comment_markdown: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DeadlineCheckResponse {
+#[derive(Debug, Deserialize)]
+pub struct InternalInstallationSyncRequest {
+    pub delivery_id: String,
+    pub event_time: DateTime<Utc>,
+    pub event_name: String,
     pub action: String,
-    pub close: Option<DeadlineCloseAction>,
+    pub installation: Option<InternalInstallationPayload>,
+    #[serde(default)]
+    pub repositories_added: Vec<InternalRepository>,
+    #[serde(default)]
+    pub repositories_removed: Vec<InternalRepository>,
+    #[serde(default)]
+    pub repositories: Vec<InternalRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InternalInstallationPayload {
+    pub id: i64,
+    pub account_login: String,
+    pub account_type: String,
 }
 
 #[derive(Debug, Serialize)]
-pub struct DeadlineCloseAction {
-    pub github_repo_id: i64,
-    pub github_pr_number: i32,
-    pub comment_markdown: String,
+pub struct InternalInstallationSyncResponse {
+    pub ingest_status: String,
+    pub updated_installation_id: Option<i64>,
+    pub updated_repositories: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,56 +251,26 @@ pub struct BotActionClaimResponse {
 pub struct BotActionItem {
     pub id: Uuid,
     pub action_type: String,
-    pub challenge_id: Option<Uuid>,
+    pub installation_id: i64,
     pub github_repo_id: i64,
+    pub repo_full_name: String,
     pub github_pr_number: i32,
+    pub challenge_id: Option<Uuid>,
     pub payload: serde_json::Value,
+    pub attempts: i32,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct BotActionResultRequest {
     pub worker_id: String,
-    pub success: bool,
-    pub failure_reason: Option<String>,
-    pub retryable: Option<bool>,
+    pub outcome: String,
+    pub failure_code: Option<String>,
+    pub failure_message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct BotActionResultResponse {
     pub id: Uuid,
     pub status: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateBotClientRequest {
-    pub name: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BotClientSummary {
-    pub id: Uuid,
-    pub name: String,
-    pub status: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BotClientDetailResponse {
-    pub id: Uuid,
-    pub name: String,
-    pub status: String,
-    pub key_ids: Vec<String>,
-    pub installation_ids: Vec<i64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateBotKeyResponse {
-    pub key_id: String,
-    pub secret: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SetInstallationBindingsRequest {
-    pub installation_ids: Vec<i64>,
 }

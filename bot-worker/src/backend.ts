@@ -1,9 +1,11 @@
 import type {
+  BotActionOutcome,
   BotActionResultResponse,
   BotActionsClaimResponse,
-  DeadlineCheckResponse,
+  InstallationSyncIngestResponse,
+  NormalizedInstallationSyncEvent,
   NormalizedPrEvent,
-  PrEventDecisionResponse,
+  PullRequestIngestResponse,
 } from "./types.js";
 import { buildInternalHmacSignature } from "./crypto.js";
 import { fetchWithRetry } from "./retry.js";
@@ -42,37 +44,38 @@ export class BackendClient {
     withAuth(headers, this.serviceToken);
   }
 
-  async postPrEvent(payload: NormalizedPrEvent): Promise<PrEventDecisionResponse> {
+  async postPullRequestEvent(payload: NormalizedPrEvent): Promise<PullRequestIngestResponse> {
     const headers = new Headers({ "content-type": "application/json" });
-    this.applyInternalAuth(headers, payload.delivery_id);
-    const res = await fetchWithRetry(`${this.baseUrl}/internal/v1/pr-events`, {
+    this.applyInternalAuth(headers, `github-event:pull_request:${payload.delivery_id}`);
+    const res = await fetchWithRetry(`${this.baseUrl}/internal/v2/github/events/pull-request`, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      throw new Error(`Backend /pr-events failed (${res.status})`);
+      throw new Error(`Backend /github/events/pull-request failed (${res.status})`);
     }
-    return (await res.json()) as PrEventDecisionResponse;
+    return (await res.json()) as PullRequestIngestResponse;
   }
 
-  async deadlineCheck(challengeId: string): Promise<DeadlineCheckResponse> {
-    const headers = new Headers();
-    this.applyInternalAuth(headers, challengeId);
-    const res = await fetchWithRetry(`${this.baseUrl}/internal/v1/challenges/${challengeId}/deadline-check`, {
+  async postInstallationSyncEvent(payload: NormalizedInstallationSyncEvent): Promise<InstallationSyncIngestResponse> {
+    const headers = new Headers({ "content-type": "application/json" });
+    this.applyInternalAuth(headers, `github-event:installation-sync:${payload.delivery_id}`);
+    const res = await fetchWithRetry(`${this.baseUrl}/internal/v2/github/events/installation-sync`, {
       method: "POST",
       headers,
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      throw new Error(`Backend /deadline-check failed (${res.status})`);
+      throw new Error(`Backend /github/events/installation-sync failed (${res.status})`);
     }
-    return (await res.json()) as DeadlineCheckResponse;
+    return (await res.json()) as InstallationSyncIngestResponse;
   }
 
   async claimBotActions(workerId: string, limit: number): Promise<BotActionsClaimResponse> {
     const headers = new Headers({ "content-type": "application/json" });
     this.applyInternalAuth(headers, `bot-actions-claim:${workerId}`);
-    const res = await fetchWithRetry(`${this.baseUrl}/internal/v1/bot-actions/claim`, {
+    const res = await fetchWithRetry(`${this.baseUrl}/internal/v2/bot-actions/claim`, {
       method: "POST",
       headers,
       body: JSON.stringify({ worker_id: workerId, limit }),
@@ -86,20 +89,20 @@ export class BackendClient {
   async postBotActionResult(
     actionId: string,
     workerId: string,
-    success: boolean,
-    failureReason: string | null,
-    retryable: boolean | null,
+    outcome: BotActionOutcome,
+    failureCode: string | null,
+    failureMessage: string | null,
   ): Promise<BotActionResultResponse> {
     const headers = new Headers({ "content-type": "application/json" });
-    this.applyInternalAuth(headers, `bot-action-result:${actionId}:${workerId}:${success}`);
-    const res = await fetchWithRetry(`${this.baseUrl}/internal/v1/bot-actions/${actionId}/result`, {
+    this.applyInternalAuth(headers, `bot-action-result:${actionId}:${workerId}:${outcome}`);
+    const res = await fetchWithRetry(`${this.baseUrl}/internal/v2/bot-actions/${actionId}/result`, {
       method: "POST",
       headers,
       body: JSON.stringify({
         worker_id: workerId,
-        success,
-        failure_reason: failureReason,
-        retryable,
+        outcome,
+        failure_code: failureCode,
+        failure_message: failureMessage,
       }),
     });
     if (!res.ok) {

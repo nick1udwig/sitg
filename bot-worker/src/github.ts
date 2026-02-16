@@ -25,8 +25,13 @@ const parseRepo = (fullName: string): RepoRef => {
   return { owner, repo };
 };
 
-const buildGateMarker = (challengeId: string): string => `<!-- sitg:gate:${challengeId} -->`;
-const buildTimeoutMarker = (challengeId: string): string => `<!-- sitg:timeout:${challengeId} -->`;
+const ensureMarker = (marker: string): string => {
+  const trimmed = marker.trim();
+  if (!trimmed) {
+    throw new Error("comment_marker is required");
+  }
+  return trimmed.startsWith("<!--") ? trimmed : `<!-- ${trimmed} -->`;
+};
 
 export class GitHubClient {
   private readonly appId: string;
@@ -39,26 +44,14 @@ export class GitHubClient {
     this.apiBaseUrl = options.apiBaseUrl.replace(/\/+$/, "");
   }
 
-  async upsertGateComment(
+  async upsertPrComment(
     installationId: number,
     repoFullName: string,
     prNumber: number,
-    challengeId: string,
+    commentMarker: string,
     commentMarkdown: string,
   ): Promise<void> {
-    const marker = buildGateMarker(challengeId);
-    await this.upsertIssueComment(installationId, repoFullName, prNumber, marker, commentMarkdown);
-  }
-
-  async upsertTimeoutComment(
-    installationId: number,
-    repoFullName: string,
-    prNumber: number,
-    challengeId: string,
-    commentMarkdown: string,
-  ): Promise<void> {
-    const marker = buildTimeoutMarker(challengeId);
-    await this.upsertIssueComment(installationId, repoFullName, prNumber, marker, commentMarkdown);
+    await this.upsertIssueComment(installationId, repoFullName, prNumber, ensureMarker(commentMarker), commentMarkdown);
   }
 
   async closePullRequest(installationId: number, repoFullName: string, prNumber: number): Promise<void> {
@@ -87,28 +80,22 @@ export class GitHubClient {
 
     const existing = await this.findCommentByMarker(token, owner, repo, issueNumber, marker);
     if (existing) {
-      const updateRes = await fetchWithRetry(
-        `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/comments/${existing.id}`,
-        {
-          method: "PATCH",
-          headers: this.defaultHeaders(token),
-          body: JSON.stringify({ body }),
-        },
-      );
+      const updateRes = await fetchWithRetry(`${this.apiBaseUrl}/repos/${owner}/${repo}/issues/comments/${existing.id}`, {
+        method: "PATCH",
+        headers: this.defaultHeaders(token),
+        body: JSON.stringify({ body }),
+      });
       if (!updateRes.ok) {
         throw new Error(`GitHub update issue comment failed (${updateRes.status})`);
       }
       return;
     }
 
-    const createRes = await fetchWithRetry(
-      `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
-      {
-        method: "POST",
-        headers: this.defaultHeaders(token),
-        body: JSON.stringify({ body }),
-      },
-    );
+    const createRes = await fetchWithRetry(`${this.apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
+      method: "POST",
+      headers: this.defaultHeaders(token),
+      body: JSON.stringify({ body }),
+    });
     if (!createRes.ok) {
       throw new Error(`GitHub create issue comment failed (${createRes.status})`);
     }
@@ -153,22 +140,6 @@ export class GitHubClient {
       throw new Error("GitHub installation token response missing token");
     }
     return body.token;
-  }
-
-  async getRepositoryFullNameById(installationId: number, repoId: number): Promise<string> {
-    const token = await this.getInstallationToken(installationId);
-    const res = await fetchWithRetry(`${this.apiBaseUrl}/repositories/${repoId}`, {
-      method: "GET",
-      headers: this.defaultHeaders(token),
-    });
-    if (!res.ok) {
-      throw new Error(`GitHub get repository by id failed (${res.status})`);
-    }
-    const body = (await res.json()) as { full_name?: string };
-    if (!body.full_name) {
-      throw new Error("GitHub repository response missing full_name");
-    }
-    return body.full_name;
   }
 
   private defaultHeaders(token: string): HeadersInit {

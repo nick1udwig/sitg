@@ -2,12 +2,10 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use uuid::Uuid;
 
 use crate::error::{ApiError, ApiResult};
 
 pub struct InternalAuthContext {
-    pub bot_client_id: Uuid,
     pub _key_id: String,
     pub timestamp: i64,
     pub signature_hex: String,
@@ -35,32 +33,29 @@ pub async fn verify_internal_request(
         .to_string();
     let signature = hex::decode(&signature_hex).map_err(|_| ApiError::Forbidden)?;
 
-    let row: Option<(Uuid, String)> = sqlx::query_as(
+    let stored_secret: Option<String> = sqlx::query_scalar(
         r#"
-        select k.bot_client_id, k.secret_hash
-        from bot_client_keys k
-        join bot_clients c on c.id = k.bot_client_id
-        where k.key_id = $1
-          and k.active = true
-          and k.revoked_at is null
-          and c.status = 'ACTIVE'
+        select secret_hash
+        from service_bot_keys
+        where key_id = $1
+          and active = true
+          and revoked_at is null
         "#,
     )
     .bind(key_id)
     .fetch_optional(pool)
     .await?;
 
-    let (bot_client_id, stored_secret) = row.ok_or(ApiError::Forbidden)?;
+    let stored_secret = stored_secret.ok_or(ApiError::Forbidden)?;
     verify_hmac(&stored_secret, timestamp, message, &signature)?;
 
-    sqlx::query("update bot_client_keys set last_used_at = $2 where key_id = $1")
+    sqlx::query("update service_bot_keys set last_used_at = $2 where key_id = $1")
         .bind(key_id)
         .bind(Utc::now())
         .execute(pool)
         .await?;
 
     Ok(InternalAuthContext {
-        bot_client_id,
         _key_id: key_id.to_string(),
         timestamp,
         signature_hex,
@@ -79,6 +74,7 @@ fn verify_hmac(
     mac.verify_slice(signature).map_err(|_| ApiError::Forbidden)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn encode_bot_secret_for_storage(raw_secret: &str) -> String {
     let digest = Sha256::digest(raw_secret.as_bytes());
     format!("sha256:{}", hex::encode(digest))
@@ -126,25 +122,5 @@ mod tests {
         let err = verify_hmac(&secret, Utc::now().timestamp(), "abc", &[0u8; 32])
             .expect_err("signature should not verify");
         assert!(matches!(err, ApiError::Forbidden));
-    }
-}
-
-pub async fn ensure_installation_bound(
-    pool: &PgPool,
-    bot_client_id: Uuid,
-    installation_id: i64,
-) -> ApiResult<()> {
-    let bound: Option<i64> = sqlx::query_scalar(
-        "select installation_id from bot_installation_bindings where bot_client_id = $1 and installation_id = $2",
-    )
-    .bind(bot_client_id)
-    .bind(installation_id)
-    .fetch_optional(pool)
-    .await?;
-
-    if bound.is_some() {
-        Ok(())
-    } else {
-        Err(ApiError::Forbidden)
     }
 }

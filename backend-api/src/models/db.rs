@@ -60,16 +60,12 @@ pub struct WalletLinkChallengeRow {
 pub struct BotActionRow {
     pub id: Uuid,
     pub action_type: String,
-    pub challenge_id: Option<Uuid>,
+    pub installation_id: i64,
     pub github_repo_id: i64,
+    pub repo_full_name: String,
     pub github_pr_number: i32,
+    pub challenge_id: Option<Uuid>,
     pub payload: serde_json::Value,
-}
-
-#[derive(Debug, Clone, FromRow)]
-pub struct BotClientSummaryRow {
-    pub id: Uuid,
-    pub name: String,
-    pub status: String,
+    pub attempts: i32,
     pub created_at: DateTime<Utc>,
 }

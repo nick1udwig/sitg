@@ -22,25 +22,18 @@ use crate::{
     models::{
         api::{
             AuthCallbackQuery, AuthStartQuery, BotActionClaimRequest, BotActionClaimResponse,
-            BotActionItem, BotActionResultRequest, BotActionResultResponse,
-            BotClientDetailResponse, BotClientSummary, ConfirmRequest, ConfirmResponse,
-            ConfirmTypedDataResponse, CreateBotClientRequest, CreateBotKeyResponse,
-            DeadlineCheckResponse, DeadlineCloseAction, GateResponse, InternalChallengePayload,
+            BotActionItem, BotActionResultRequest, BotActionResultResponse, ConfirmRequest,
+            ConfirmResponse, ConfirmTypedDataResponse, GateResponse,
+            InternalInstallationSyncRequest, InternalInstallationSyncResponse,
             InternalPrEventRequest, InternalPrEventResponse, MeResponse, RepoConfigPutRequest,
-            RepoConfigResponse, RepoOptionResponse, ResolveLoginsRequest, ResolveLoginsResponse,
-            ResolvedLogin, SetInstallationBindingsRequest, ThresholdResponse, TypedDataDomain,
-            TypedDataMessage, WalletLinkChallengeResponse, WalletLinkConfirmRequest,
-            WalletLinkConfirmResponse, WhitelistPutRequest,
+            RepoConfigResponse, RepoGithubAppStatusResponse, RepoOptionResponse,
+            ResolveLoginsRequest, ResolveLoginsResponse, ResolvedLogin, ThresholdResponse,
+            TypedDataDomain, TypedDataMessage, WalletLinkChallengeResponse,
+            WalletLinkConfirmRequest, WalletLinkConfirmResponse, WhitelistPutRequest,
         },
-        db::{
-            BotActionRow, BotClientSummaryRow, ChallengeRow, CurrentUserRow, RepoConfigRow,
-            WalletLinkChallengeRow,
-        },
+        db::{BotActionRow, ChallengeRow, CurrentUserRow, RepoConfigRow, WalletLinkChallengeRow},
     },
-    services::internal_auth::{
-        encode_bot_secret_for_storage, ensure_installation_bound,
-        verify_internal_request as verify_internal_with_key_id,
-    },
+    services::internal_auth::verify_internal_request as verify_internal_with_key_id,
     services::signature_service::{
         recover_eip712_pr_confirmation_address, recover_personal_sign_address, uuid_to_bytes32_hex,
         uuid_to_uint256_decimal,
@@ -56,21 +49,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/me", get(me))
         .route("/api/v1/repos", get(list_owned_repos))
         .route(
-            "/api/v1/bot-clients",
-            get(list_bot_clients).post(create_bot_client),
-        )
-        .route("/api/v1/bot-clients/{bot_client_id}", get(get_bot_client))
-        .route(
-            "/api/v1/bot-clients/{bot_client_id}/keys",
-            post(create_bot_client_key),
-        )
-        .route(
-            "/api/v1/bot-clients/{bot_client_id}/keys/{key_id}/revoke",
-            post(revoke_bot_client_key),
-        )
-        .route(
-            "/api/v1/bot-clients/{bot_client_id}/installation-bindings",
-            put(set_bot_installation_bindings),
+            "/api/v1/repos/{repo_id}/github-app-status",
+            get(get_repo_github_app_status),
         )
         .route(
             "/api/v1/repos/{repo_id}/config",
@@ -94,18 +74,21 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/wallet/link/challenge", post(wallet_link_challenge))
         .route("/api/v1/wallet/link/confirm", post(wallet_link_confirm))
         .route("/api/v1/wallet/link", delete(wallet_unlink))
-        .route("/internal/v1/pr-events", post(internal_pr_events))
         .route(
-            "/internal/v1/challenges/{challenge_id}/deadline-check",
-            post(internal_deadline_check),
+            "/internal/v2/github/events/pull-request",
+            post(internal_v2_pr_events),
         )
         .route(
-            "/internal/v1/bot-actions/claim",
-            post(internal_bot_actions_claim),
+            "/internal/v2/github/events/installation-sync",
+            post(internal_v2_installation_sync),
         )
         .route(
-            "/internal/v1/bot-actions/{action_id}/result",
-            post(internal_bot_action_result),
+            "/internal/v2/bot-actions/claim",
+            post(internal_v2_bot_actions_claim),
+        )
+        .route(
+            "/internal/v2/bot-actions/{action_id}/result",
+            post(internal_v2_bot_action_result),
         )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
@@ -324,223 +307,58 @@ async fn list_owned_repos(
     ))
 }
 
-async fn list_bot_clients(
+async fn get_repo_github_app_status(
     State(state): State<Arc<AppState>>,
+    Path(repo_id): Path<i64>,
     jar: CookieJar,
-) -> ApiResult<Json<Vec<BotClientSummary>>> {
+) -> ApiResult<Json<RepoGithubAppStatusResponse>> {
     let user = require_current_user(&state, &jar).await?;
-    let rows: Vec<BotClientSummaryRow> = sqlx::query_as(
-        "select id, name, status, created_at from bot_clients where owner_user_id = $1 order by created_at desc",
-    )
-    .bind(user.id)
-    .fetch_all(&state.pool)
-    .await?;
+    let token = user
+        .github_access_token
+        .as_deref()
+        .ok_or(ApiError::Unauthenticated)?;
 
-    let items = rows
-        .into_iter()
-        .map(|r| BotClientSummary {
-            id: r.id,
-            name: r.name,
-            status: r.status,
-            created_at: r.created_at,
-        })
-        .collect();
-    Ok(Json(items))
-}
-
-async fn create_bot_client(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    Json(payload): Json<CreateBotClientRequest>,
-) -> ApiResult<Json<BotClientSummary>> {
-    let user = require_current_user(&state, &jar).await?;
-    let name = payload.name.trim();
-    if name.is_empty() {
-        return Err(ApiError::validation("name is required"));
+    let repo = state
+        .github_oauth_service
+        .lookup_repo_by_id(token, repo_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if !repo.can_write {
+        return Err(ApiError::Forbidden);
     }
 
-    let now = Utc::now();
-    let id = Uuid::new_v4();
-    let row: BotClientSummaryRow = sqlx::query_as(
+    let row: Option<(i64, String, String, bool)> = sqlx::query_as(
         r#"
-        insert into bot_clients (id, owner_user_id, name, status, created_at, updated_at)
-        values ($1, $2, $3, 'ACTIVE', $4, $4)
-        returning id, name, status, created_at
-        "#,
-    )
-    .bind(id)
-    .bind(user.id)
-    .bind(name)
-    .bind(now)
-    .fetch_one(&state.pool)
-    .await?;
-
-    Ok(Json(BotClientSummary {
-        id: row.id,
-        name: row.name,
-        status: row.status,
-        created_at: row.created_at,
-    }))
-}
-
-async fn get_bot_client(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    Path(bot_client_id): Path<Uuid>,
-) -> ApiResult<Json<BotClientDetailResponse>> {
-    let user = require_current_user(&state, &jar).await?;
-    ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
-
-    let (id, name, status): (Uuid, String, String) =
-        sqlx::query_as("select id, name, status from bot_clients where id = $1")
-            .bind(bot_client_id)
-            .fetch_one(&state.pool)
-            .await?;
-
-    let key_ids: Vec<String> = sqlx::query_scalar(
-        "select key_id from bot_client_keys where bot_client_id = $1 and revoked_at is null order by created_at desc",
-    )
-    .bind(bot_client_id)
-    .fetch_all(&state.pool)
-    .await?;
-
-    let installation_ids: Vec<i64> = sqlx::query_scalar(
-        "select installation_id from bot_installation_bindings where bot_client_id = $1 order by installation_id asc",
-    )
-    .bind(bot_client_id)
-    .fetch_all(&state.pool)
-    .await?;
-
-    Ok(Json(BotClientDetailResponse {
-        id,
-        name,
-        status,
-        key_ids,
-        installation_ids,
-    }))
-}
-
-async fn create_bot_client_key(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    Path(bot_client_id): Path<Uuid>,
-) -> ApiResult<Json<CreateBotKeyResponse>> {
-    let user = require_current_user(&state, &jar).await?;
-    ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
-
-    let key_id = format!("bck_live_{}", build_token(12));
-    let secret = format!("sitgbs_live_{}", build_token(40));
-    let stored_secret = encode_bot_secret_for_storage(&secret);
-    let now = Utc::now();
-
-    sqlx::query(
-        r#"
-        insert into bot_client_keys (key_id, bot_client_id, secret_hash, active, last_used_at, revoked_at, created_at)
-        values ($1, $2, $3, true, null, null, $4)
-        "#,
-    )
-    .bind(&key_id)
-    .bind(bot_client_id)
-    .bind(&stored_secret)
-    .bind(now)
-    .execute(&state.pool)
-    .await?;
-
-    Ok(Json(CreateBotKeyResponse {
-        key_id,
-        secret,
-        created_at: now,
-    }))
-}
-
-async fn revoke_bot_client_key(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    Path((bot_client_id, key_id)): Path<(Uuid, String)>,
-) -> ApiResult<StatusCode> {
-    let user = require_current_user(&state, &jar).await?;
-    ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
-
-    sqlx::query(
-        "update bot_client_keys set active = false, revoked_at = $3 where bot_client_id = $1 and key_id = $2",
-    )
-    .bind(bot_client_id)
-    .bind(key_id)
-    .bind(Utc::now())
-    .execute(&state.pool)
-    .await?;
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn set_bot_installation_bindings(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    Path(bot_client_id): Path<Uuid>,
-    Json(payload): Json<SetInstallationBindingsRequest>,
-) -> ApiResult<StatusCode> {
-    let user = require_current_user(&state, &jar).await?;
-    ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
-
-    let mut tx = state.pool.begin().await?;
-
-    for installation_id in &payload.installation_ids {
-        let installation_owner: Option<String> = sqlx::query_scalar(
-            "select account_login from github_installations where installation_id = $1",
-        )
-        .bind(*installation_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        let Some(owner_login) = installation_owner else {
-            return Err(ApiError::validation("unknown installation_id"));
-        };
-        if !owner_login.eq_ignore_ascii_case(&user.github_login) {
-            return Err(ApiError::Forbidden);
-        }
-    }
-
-    let conflict: Option<i64> = sqlx::query_scalar(
-        r#"
-        select installation_id
-        from bot_installation_bindings
-        where installation_id = any($1) and bot_client_id <> $2
+        select i.installation_id, i.account_login, i.account_type, gir.active
+        from github_installation_repositories gir
+        join github_installations i on i.installation_id = gir.installation_id
+        where gir.github_repo_id = $1
+          and i.active = true
+        order by gir.updated_at desc
         limit 1
         "#,
     )
-    .bind(&payload.installation_ids)
-    .bind(bot_client_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if conflict.is_some() {
-        return Err(ApiError::Conflict("INSTALLATION_ALREADY_BOUND"));
-    }
-
-    sqlx::query(
-        "delete from bot_installation_bindings where bot_client_id = $1 and not (installation_id = any($2))",
-    )
-    .bind(bot_client_id)
-    .bind(&payload.installation_ids)
-    .execute(&mut *tx)
+    .bind(repo_id)
+    .fetch_optional(&state.pool)
     .await?;
 
-    for installation_id in payload.installation_ids {
-        sqlx::query(
-            r#"
-            insert into bot_installation_bindings (bot_client_id, installation_id, created_at)
-            values ($1, $2, $3)
-            on conflict (bot_client_id, installation_id) do nothing
-            "#,
-        )
-        .bind(bot_client_id)
-        .bind(installation_id)
-        .bind(Utc::now())
-        .execute(&mut *tx)
-        .await?;
+    if let Some((installation_id, account_login, account_type, repo_connected)) = row {
+        return Ok(Json(RepoGithubAppStatusResponse {
+            installed: true,
+            installation_id: Some(installation_id),
+            installation_account_login: Some(account_login),
+            installation_account_type: Some(account_type),
+            repo_connected,
+        }));
     }
 
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(RepoGithubAppStatusResponse {
+        installed: false,
+        installation_id: None,
+        installation_account_login: None,
+        installation_account_type: None,
+        repo_connected: false,
+    }))
 }
 
 async fn get_repo_config(
@@ -629,63 +447,27 @@ async fn put_repo_config(
             return Err(ApiError::Forbidden);
         }
 
-        let owner_login = repo
-            .full_name
-            .split('/')
-            .next()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| ApiError::validation("Invalid repository full name"))?;
-
         let installation_id: Option<i64> = sqlx::query_scalar(
             r#"
-            select installation_id
-            from github_installations
-            where lower(account_login) = lower($1)
-            order by updated_at desc
+            select gir.installation_id
+            from github_installation_repositories gir
+            join github_installations i on i.installation_id = gir.installation_id
+            where gir.github_repo_id = $1
+              and gir.active = true
+              and i.active = true
+            order by gir.updated_at desc
             limit 1
             "#,
         )
-        .bind(owner_login)
+        .bind(repo_id)
         .fetch_optional(&state.pool)
         .await?;
 
-        let installation_id = if let Some(id) = installation_id {
-            id
-        } else {
-            let installations = state
-                .github_oauth_service
-                .list_user_installations(token)
-                .await?;
-            let matched = installations
-                .into_iter()
-                .find(|item| item.account_login.eq_ignore_ascii_case(owner_login));
-
-            let Some(matched) = matched else {
-                return Err(ApiError::validation(
-                    "GitHub App is not installed for this repository owner yet. Install the app and retry.",
-                ));
-            };
-
-            sqlx::query(
-                r#"
-                insert into github_installations (installation_id, account_login, account_type, created_at, updated_at)
-                values ($1, $2, $3, $4, $4)
-                on conflict (installation_id) do update
-                set account_login = excluded.account_login,
-                    account_type = excluded.account_type,
-                    updated_at = excluded.updated_at
-                "#,
+        let installation_id = installation_id.ok_or_else(|| {
+            ApiError::validation(
+                "GitHub App is not connected to this repository yet. Install/connect the app and retry.",
             )
-            .bind(matched.id)
-            .bind(&matched.account_login)
-            .bind(&matched.account_type)
-            .bind(Utc::now())
-            .execute(&state.pool)
-            .await?;
-
-            matched.id
-        };
+        })?;
 
         (repo.full_name, installation_id, true)
     };
@@ -1273,24 +1055,59 @@ async fn wallet_unlink(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn internal_pr_events(
+async fn internal_v2_pr_events(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<InternalPrEventRequest>,
 ) -> ApiResult<Json<InternalPrEventResponse>> {
-    let auth =
-        verify_internal_from_headers(&state, &headers, &payload.delivery_id.to_string()).await?;
-    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
-    ensure_installation_bound(&state.pool, auth.bot_client_id, payload.installation_id).await?;
+    if payload.delivery_id.trim().is_empty() {
+        return Err(ApiError::validation("delivery_id is required"));
+    }
 
-    tracing::info!(
-        delivery_id = %payload.delivery_id,
-        installation_id = payload.installation_id,
-        action = %payload.action,
-        pr_id = payload.pull_request.id,
-        pr_url = %payload.pull_request.html_url,
-        "received internal PR event"
+    let message = format!("github-event:pull_request:{}", payload.delivery_id);
+    let auth = verify_internal_from_headers(&state, &headers, &message).await?;
+    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
+
+    let is_new_delivery =
+        register_github_delivery(&state, &payload.delivery_id, "pull_request").await?;
+    if !is_new_delivery {
+        return Ok(Json(InternalPrEventResponse {
+            ingest_status: "DUPLICATE".to_string(),
+            challenge_id: None,
+            enqueued_actions: 0,
+        }));
+    }
+
+    let relevant_action = matches!(
+        payload.action.as_str(),
+        "opened" | "reopened" | "ready_for_review" | "synchronize"
     );
+    if !relevant_action {
+        return Ok(Json(InternalPrEventResponse {
+            ingest_status: "IGNORED".to_string(),
+            challenge_id: None,
+            enqueued_actions: 0,
+        }));
+    }
+
+    let mapped_repo: Option<i64> = sqlx::query_scalar(
+        r#"
+        select github_repo_id
+        from github_installation_repositories
+        where installation_id = $1 and github_repo_id = $2 and active = true
+        "#,
+    )
+    .bind(payload.installation_id)
+    .bind(payload.repository.id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if mapped_repo.is_none() {
+        return Ok(Json(InternalPrEventResponse {
+            ingest_status: "IGNORED".to_string(),
+            challenge_id: None,
+            enqueued_actions: 0,
+        }));
+    }
 
     let config: Option<RepoConfigRow> = sqlx::query_as(
         r#"
@@ -1304,20 +1121,19 @@ async fn internal_pr_events(
     .fetch_optional(&state.pool)
     .await?;
 
-    let config = match config {
-        Some(c) => c,
-        None => {
-            return Ok(Json(InternalPrEventResponse {
-                decision: "IGNORE".to_string(),
-                challenge: None,
-            }));
-        }
+    let Some(config) = config else {
+        return Ok(Json(InternalPrEventResponse {
+            ingest_status: "IGNORED".to_string(),
+            challenge_id: None,
+            enqueued_actions: 0,
+        }));
     };
 
     if payload.pull_request.is_draft && !config.draft_prs_gated {
         return Ok(Json(InternalPrEventResponse {
-            decision: "IGNORE".to_string(),
-            challenge: None,
+            ingest_status: "IGNORED".to_string(),
+            challenge_id: None,
+            enqueued_actions: 0,
         }));
     }
 
@@ -1330,9 +1146,25 @@ async fn internal_pr_events(
     .await?;
 
     if is_whitelisted.is_some() {
+        let inserted = queue_pr_comment_action(
+            &state,
+            None,
+            payload.installation_id,
+            payload.repository.id,
+            &payload.repository.full_name,
+            payload.pull_request.number,
+            "Contributor is whitelisted for this repository. No stake verification is required.",
+            &format!(
+                "sitg:exempt:{}:{}",
+                payload.repository.id, payload.pull_request.number
+            ),
+            "WHITELIST_EXEMPT",
+        )
+        .await?;
         return Ok(Json(InternalPrEventResponse {
-            decision: "EXEMPT".to_string(),
-            challenge: None,
+            ingest_status: "ACCEPTED".to_string(),
+            challenge_id: None,
+            enqueued_actions: if inserted { 1 } else { 0 },
         }));
     }
 
@@ -1353,13 +1185,11 @@ async fn internal_pr_events(
     .await?;
 
     let challenge = if let Some(existing) = existing {
-        if existing.status == "VERIFIED" {
-            return Ok(Json(InternalPrEventResponse {
-                decision: "ALREADY_VERIFIED".to_string(),
-                challenge: None,
-            }));
+        if existing.status == "PENDING" {
+            Some((existing.id, existing.gate_token))
+        } else {
+            None
         }
-        existing
     } else {
         let challenge_id = Uuid::new_v4();
         let gate_token = build_token(24);
@@ -1371,9 +1201,9 @@ async fn internal_pr_events(
             insert into pr_challenges (
               id, gate_token, github_repo_id, github_repo_full_name, github_pr_number,
               github_pr_author_id, github_pr_author_login, head_sha, threshold_wei_snapshot,
-              draft_at_creation, deadline_at, status, verified_wallet_address, created_by_bot_client_id, created_at, updated_at
+              draft_at_creation, deadline_at, status, verified_wallet_address, created_at, updated_at
             )
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PENDING', null, $12, $13, $13)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PENDING', null, $12, $12)
             "#,
         )
         .bind(challenge_id)
@@ -1387,7 +1217,6 @@ async fn internal_pr_events(
         .bind(config.threshold_wei)
         .bind(payload.pull_request.is_draft)
         .bind(deadline_at)
-        .bind(auth.bot_client_id)
         .bind(now)
         .execute(&state.pool)
         .await?;
@@ -1403,144 +1232,244 @@ async fn internal_pr_events(
         .execute(&state.pool)
         .await?;
 
-        ChallengeRow {
-            id: challenge_id,
-            gate_token,
-            github_repo_id: payload.repository.id,
-            github_repo_full_name: payload.repository.full_name,
-            github_pr_number: payload.pull_request.number,
-            github_pr_author_id: payload.pull_request.user.id,
-            github_pr_author_login: payload.pull_request.user.login,
-            head_sha: payload.pull_request.head_sha,
-            threshold_wei_snapshot: config.threshold_wei,
-            _draft_at_creation: payload.pull_request.is_draft,
-            deadline_at,
-            status: "PENDING".to_string(),
-        }
+        Some((challenge_id, gate_token))
     };
 
-    let gate_url = format!("{}/g/{}", state.config.app_base_url, challenge.gate_token);
-
-    let challenge_payload = InternalChallengePayload {
-        id: challenge.id,
-        gate_url: gate_url.clone(),
-        deadline_at: challenge.deadline_at,
-        comment_markdown: format!(
+    let mut enqueued_actions = 0i32;
+    if let Some((challenge_id, gate_token)) = challenge.as_ref() {
+        let gate_url = format!("{}/g/{}", state.config.app_base_url, gate_token);
+        let comment = format!(
             "This repository requires stake verification to keep this PR open.\n\nPlease verify within **30 minutes**:\n{}\n\nIf verification is not completed in time, this PR will be automatically closed.",
             gate_url
-        ),
-    };
+        );
+        let inserted = queue_pr_comment_action(
+            &state,
+            Some(*challenge_id),
+            payload.installation_id,
+            payload.repository.id,
+            &payload.repository.full_name,
+            payload.pull_request.number,
+            &comment,
+            &format!("sitg:gate:{}", challenge_id),
+            "REQUIRE_STAKE",
+        )
+        .await?;
+        if inserted {
+            enqueued_actions = 1;
+        }
+    }
 
     Ok(Json(InternalPrEventResponse {
-        decision: "REQUIRE_STAKE".to_string(),
-        challenge: Some(challenge_payload),
+        ingest_status: "ACCEPTED".to_string(),
+        challenge_id: challenge.map(|(id, _)| id),
+        enqueued_actions,
     }))
 }
 
-async fn internal_deadline_check(
+async fn internal_v2_installation_sync(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(challenge_id): Path<Uuid>,
-) -> ApiResult<Json<DeadlineCheckResponse>> {
-    let auth = verify_internal_from_headers(&state, &headers, &challenge_id.to_string()).await?;
+    Json(payload): Json<InternalInstallationSyncRequest>,
+) -> ApiResult<Json<InternalInstallationSyncResponse>> {
+    if payload.delivery_id.trim().is_empty() {
+        return Err(ApiError::validation("delivery_id is required"));
+    }
+
+    let message = format!("github-event:installation-sync:{}", payload.delivery_id);
+    let auth = verify_internal_from_headers(&state, &headers, &message).await?;
     store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
 
-    let challenge: Option<ChallengeRow> = sqlx::query_as(
-        r#"
-        select id, gate_token, github_repo_id, github_repo_full_name, github_pr_number,
-               github_pr_author_id, github_pr_author_login, head_sha, threshold_wei_snapshot,
-               draft_at_creation as _draft_at_creation, deadline_at, status
-        from pr_challenges
-        where id = $1
-        "#,
-    )
-    .bind(challenge_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let is_new_delivery =
+        register_github_delivery(&state, &payload.delivery_id, &payload.event_name).await?;
+    if !is_new_delivery {
+        return Ok(Json(InternalInstallationSyncResponse {
+            ingest_status: "DUPLICATE".to_string(),
+            updated_installation_id: None,
+            updated_repositories: 0,
+        }));
+    }
 
-    let challenge = challenge.ok_or(ApiError::NotFound)?;
-    let installation_id: i64 =
-        sqlx::query_scalar("select installation_id from repo_configs where github_repo_id = $1")
-            .bind(challenge.github_repo_id)
-            .fetch_one(&state.pool)
+    let mut tx = state.pool.begin().await?;
+    let updated_installation_id: Option<i64>;
+    let mut updated_repositories = 0i32;
+
+    match (payload.event_name.as_str(), payload.action.as_str()) {
+        ("installation", "created")
+        | ("installation", "deleted")
+        | ("installation", "suspend")
+        | ("installation", "unsuspend") => {
+            let Some(installation) = payload.installation else {
+                tx.commit().await?;
+                return Ok(Json(InternalInstallationSyncResponse {
+                    ingest_status: "IGNORED".to_string(),
+                    updated_installation_id: None,
+                    updated_repositories: 0,
+                }));
+            };
+
+            updated_installation_id = Some(installation.id);
+            let active = matches!(payload.action.as_str(), "created" | "unsuspend");
+            let suspended_at = if payload.action == "suspend" {
+                Some(payload.event_time)
+            } else {
+                None
+            };
+            let deleted_at = if payload.action == "deleted" {
+                Some(payload.event_time)
+            } else {
+                None
+            };
+
+            sqlx::query(
+                r#"
+                insert into github_installations (
+                  installation_id, account_login, account_type, active, suspended_at, deleted_at, created_at, updated_at
+                )
+                values ($1, $2, $3, $4, $5, $6, $7, $7)
+                on conflict (installation_id) do update
+                set account_login = excluded.account_login,
+                    account_type = excluded.account_type,
+                    active = excluded.active,
+                    suspended_at = excluded.suspended_at,
+                    deleted_at = excluded.deleted_at,
+                    updated_at = excluded.updated_at
+                "#,
+            )
+            .bind(installation.id)
+            .bind(&installation.account_login)
+            .bind(&installation.account_type)
+            .bind(active)
+            .bind(suspended_at)
+            .bind(deleted_at)
+            .bind(payload.event_time)
+            .execute(&mut *tx)
             .await?;
-    ensure_installation_bound(&state.pool, auth.bot_client_id, installation_id).await?;
 
-    if challenge.status == "VERIFIED" || challenge.status == "EXEMPT" {
-        return Ok(Json(DeadlineCheckResponse {
-            action: "NOOP".to_string(),
-            close: None,
-        }));
-    }
+            if payload.action == "deleted" {
+                let changed = sqlx::query(
+                    "update github_installation_repositories set active = false, updated_at = $2 where installation_id = $1 and active = true",
+                )
+                .bind(installation.id)
+                .bind(payload.event_time)
+                .execute(&mut *tx)
+                .await?;
+                updated_repositories = changed.rows_affected() as i32;
+            } else {
+                for repo in payload.repositories {
+                    let affected = sqlx::query(
+                        r#"
+                        insert into github_installation_repositories (
+                          installation_id, github_repo_id, full_name, active, created_at, updated_at
+                        )
+                        values ($1, $2, $3, true, $4, $4)
+                        on conflict (installation_id, github_repo_id) do update
+                        set full_name = excluded.full_name,
+                            active = true,
+                            updated_at = excluded.updated_at
+                        "#,
+                    )
+                    .bind(installation.id)
+                    .bind(repo.id)
+                    .bind(&repo.full_name)
+                    .bind(payload.event_time)
+                    .execute(&mut *tx)
+                    .await?;
+                    updated_repositories += affected.rows_affected() as i32;
+                }
+            }
+        }
+        ("installation_repositories", "added") | ("installation_repositories", "removed") => {
+            let Some(installation) = payload.installation else {
+                tx.commit().await?;
+                return Ok(Json(InternalInstallationSyncResponse {
+                    ingest_status: "IGNORED".to_string(),
+                    updated_installation_id: None,
+                    updated_repositories: 0,
+                }));
+            };
+            updated_installation_id = Some(installation.id);
 
-    let is_whitelisted: Option<i64> = sqlx::query_scalar(
-        "select github_user_id from repo_whitelist where github_repo_id = $1 and github_user_id = $2",
-    )
-    .bind(challenge.github_repo_id)
-    .bind(challenge.github_pr_author_id)
-    .fetch_optional(&state.pool)
-    .await?;
-
-    if is_whitelisted.is_some() {
-        sqlx::query("update pr_challenges set status = 'EXEMPT', updated_at = $2 where id = $1")
-            .bind(challenge.id)
-            .bind(Utc::now())
-            .execute(&state.pool)
+            sqlx::query(
+                r#"
+                insert into github_installations (
+                  installation_id, account_login, account_type, active, suspended_at, deleted_at, created_at, updated_at
+                )
+                values ($1, $2, $3, true, null, null, $4, $4)
+                on conflict (installation_id) do update
+                set account_login = excluded.account_login,
+                    account_type = excluded.account_type,
+                    active = true,
+                    suspended_at = null,
+                    deleted_at = null,
+                    updated_at = excluded.updated_at
+                "#,
+            )
+            .bind(installation.id)
+            .bind(&installation.account_login)
+            .bind(&installation.account_type)
+            .bind(payload.event_time)
+            .execute(&mut *tx)
             .await?;
 
-        return Ok(Json(DeadlineCheckResponse {
-            action: "NOOP".to_string(),
-            close: None,
-        }));
+            if payload.action == "added" {
+                for repo in payload.repositories_added {
+                    let affected = sqlx::query(
+                        r#"
+                        insert into github_installation_repositories (
+                          installation_id, github_repo_id, full_name, active, created_at, updated_at
+                        )
+                        values ($1, $2, $3, true, $4, $4)
+                        on conflict (installation_id, github_repo_id) do update
+                        set full_name = excluded.full_name,
+                            active = true,
+                            updated_at = excluded.updated_at
+                        "#,
+                    )
+                    .bind(installation.id)
+                    .bind(repo.id)
+                    .bind(&repo.full_name)
+                    .bind(payload.event_time)
+                    .execute(&mut *tx)
+                    .await?;
+                    updated_repositories += affected.rows_affected() as i32;
+                }
+            } else {
+                for repo in payload.repositories_removed {
+                    let affected = sqlx::query(
+                        r#"
+                        update github_installation_repositories
+                        set active = false, updated_at = $3
+                        where installation_id = $1 and github_repo_id = $2 and active = true
+                        "#,
+                    )
+                    .bind(installation.id)
+                    .bind(repo.id)
+                    .bind(payload.event_time)
+                    .execute(&mut *tx)
+                    .await?;
+                    updated_repositories += affected.rows_affected() as i32;
+                }
+            }
+        }
+        _ => {
+            tx.commit().await?;
+            return Ok(Json(InternalInstallationSyncResponse {
+                ingest_status: "IGNORED".to_string(),
+                updated_installation_id: None,
+                updated_repositories: 0,
+            }));
+        }
     }
 
-    if challenge.status == "PENDING" {
-        sqlx::query(
-            "update pr_challenges set status = 'TIMED_OUT_CLOSED', updated_at = $2 where id = $1",
-        )
-        .bind(challenge.id)
-        .bind(Utc::now())
-        .execute(&state.pool)
-        .await?;
-
-        insert_audit(
-            &state,
-            "CHALLENGE_TIMED_OUT",
-            "challenge",
-            challenge.id.to_string(),
-            json!({"github_repo_id": challenge.github_repo_id, "github_pr_number": challenge.github_pr_number}),
-        )
-        .await?;
-
-        let close = DeadlineCloseAction {
-            github_repo_id: challenge.github_repo_id,
-            github_pr_number: challenge.github_pr_number,
-            comment_markdown:
-                "Stake verification was not completed within 30 minutes, so this PR has been closed."
-                    .to_string(),
-        };
-        queue_bot_close_action(
-            &state,
-            challenge.id,
-            challenge.github_repo_id,
-            challenge.github_pr_number,
-            &close.comment_markdown,
-        )
-        .await?;
-
-        return Ok(Json(DeadlineCheckResponse {
-            action: "CLOSE_PR".to_string(),
-            close: Some(close),
-        }));
-    }
-
-    Ok(Json(DeadlineCheckResponse {
-        action: "NOOP".to_string(),
-        close: None,
+    tx.commit().await?;
+    Ok(Json(InternalInstallationSyncResponse {
+        ingest_status: "ACCEPTED".to_string(),
+        updated_installation_id,
+        updated_repositories,
     }))
 }
 
-async fn internal_bot_actions_claim(
+async fn internal_v2_bot_actions_claim(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<BotActionClaimRequest>,
@@ -1558,31 +1487,20 @@ async fn internal_bot_actions_claim(
         r#"
         update bot_actions a
         set status = 'CLAIMED', claimed_at = $2, claimed_by = $3, attempts = attempts + 1, updated_at = $2
-        from repo_configs r
-        where a.github_repo_id = r.github_repo_id
-          and exists (
-            select 1 from bot_installation_bindings b
-            where b.bot_client_id = $4 and b.installation_id = r.installation_id
-          )
-          and a.id in (
+        where a.id in (
           select a2.id from bot_actions a2
-          join repo_configs r2 on r2.github_repo_id = a2.github_repo_id
           where a2.status = 'PENDING'
-            and exists (
-              select 1 from bot_installation_bindings b2
-              where b2.bot_client_id = $4 and b2.installation_id = r2.installation_id
-            )
           order by a2.created_at asc
           limit $1
           for update skip locked
         )
-        returning a.id, a.action_type, a.challenge_id, a.github_repo_id, a.github_pr_number, a.payload
+        returning a.id, a.action_type, a.installation_id, a.github_repo_id, a.repo_full_name, a.github_pr_number,
+                  a.challenge_id, a.payload, a.attempts, a.created_at
         "#,
     )
     .bind(limit)
     .bind(Utc::now())
     .bind(payload.worker_id)
-    .bind(auth.bot_client_id)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1592,17 +1510,21 @@ async fn internal_bot_actions_claim(
         .map(|r| BotActionItem {
             id: r.id,
             action_type: r.action_type,
-            challenge_id: r.challenge_id,
+            installation_id: r.installation_id,
             github_repo_id: r.github_repo_id,
+            repo_full_name: r.repo_full_name,
             github_pr_number: r.github_pr_number,
+            challenge_id: r.challenge_id,
             payload: r.payload,
+            attempts: r.attempts,
+            created_at: r.created_at,
         })
         .collect();
 
     Ok(Json(BotActionClaimResponse { actions }))
 }
 
-async fn internal_bot_action_result(
+async fn internal_v2_bot_action_result(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(action_id): Path<Uuid>,
@@ -1613,32 +1535,32 @@ async fn internal_bot_action_result(
     }
     let worker_id = payload.worker_id.clone();
 
-    let nonce_message = format!(
-        "bot-action-result:{}:{}:{}",
-        action_id, worker_id, payload.success
-    );
+    let outcome = payload.outcome.to_uppercase();
+    if !matches!(
+        outcome.as_str(),
+        "SUCCEEDED" | "RETRYABLE_FAILURE" | "FAILED"
+    ) {
+        return Err(ApiError::validation(
+            "outcome must be SUCCEEDED, RETRYABLE_FAILURE, or FAILED",
+        ));
+    }
+
+    let nonce_message = format!("bot-action-result:{action_id}:{worker_id}:{outcome}");
     let auth = verify_internal_from_headers(&state, &headers, &nonce_message).await?;
     store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
 
     let now = Utc::now();
-    let status = if payload.success {
+    let status = if outcome == "SUCCEEDED" {
         let updated = sqlx::query(
             r#"
-            update bot_actions a
-            set status = 'DONE', completed_at = $3, failure_reason = null, updated_at = $3
-            from repo_configs r
-            where a.github_repo_id = r.github_repo_id
-              and a.id = $1 and a.status = 'CLAIMED' and a.claimed_by = $2
-              and exists (
-                select 1 from bot_installation_bindings b
-                where b.bot_client_id = $4 and b.installation_id = r.installation_id
-              )
+            update bot_actions
+            set status = 'DONE', completed_at = $3, failure_code = null, failure_reason = null, updated_at = $3
+            where id = $1 and status = 'CLAIMED' and claimed_by = $2
             "#,
         )
         .bind(action_id)
         .bind(&worker_id)
         .bind(now)
-        .bind(auth.bot_client_id)
         .execute(&state.pool)
         .await?;
 
@@ -1646,25 +1568,23 @@ async fn internal_bot_action_result(
             return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
         }
         "DONE".to_string()
-    } else if payload.retryable.unwrap_or(false) {
+    } else if outcome == "RETRYABLE_FAILURE" {
         let updated = sqlx::query(
             r#"
-            update bot_actions a
-            set status = 'PENDING', claimed_by = null, claimed_at = null, failure_reason = $3, updated_at = $4
-            from repo_configs r
-            where a.github_repo_id = r.github_repo_id
-              and a.id = $1 and a.status = 'CLAIMED' and a.claimed_by = $2
-              and exists (
-                select 1 from bot_installation_bindings b
-                where b.bot_client_id = $5 and b.installation_id = r.installation_id
-              )
+            update bot_actions
+            set status = 'PENDING', claimed_by = null, claimed_at = null, failure_code = $3, failure_reason = $4, updated_at = $5
+            where id = $1 and status = 'CLAIMED' and claimed_by = $2
             "#,
         )
         .bind(action_id)
         .bind(&worker_id)
-        .bind(payload.failure_reason.unwrap_or_else(|| "retry requested".to_string()))
+        .bind(payload.failure_code)
+        .bind(
+            payload
+                .failure_message
+                .unwrap_or_else(|| "retry requested".to_string()),
+        )
         .bind(now)
-        .bind(auth.bot_client_id)
         .execute(&state.pool)
         .await?;
 
@@ -1675,26 +1595,20 @@ async fn internal_bot_action_result(
     } else {
         let updated = sqlx::query(
             r#"
-            update bot_actions a
-            set status = 'FAILED', completed_at = $4, failure_reason = $3, updated_at = $4
-            from repo_configs r
-            where a.github_repo_id = r.github_repo_id
-              and a.id = $1 and a.status = 'CLAIMED' and a.claimed_by = $2
-              and exists (
-                select 1 from bot_installation_bindings b
-                where b.bot_client_id = $5 and b.installation_id = r.installation_id
-              )
+            update bot_actions
+            set status = 'FAILED', completed_at = $5, failure_code = $3, failure_reason = $4, updated_at = $5
+            where id = $1 and status = 'CLAIMED' and claimed_by = $2
             "#,
         )
         .bind(action_id)
         .bind(&worker_id)
+        .bind(payload.failure_code)
         .bind(
             payload
-                .failure_reason
+                .failure_message
                 .unwrap_or_else(|| "unknown failure".to_string()),
         )
         .bind(now)
-        .bind(auth.bot_client_id)
         .execute(&state.pool)
         .await?;
 
@@ -1719,31 +1633,61 @@ async fn internal_bot_action_result(
     }))
 }
 
-async fn queue_bot_close_action(
+async fn queue_pr_comment_action(
     state: &AppState,
-    challenge_id: Uuid,
+    challenge_id: Option<Uuid>,
+    installation_id: i64,
     github_repo_id: i64,
+    repo_full_name: &str,
     github_pr_number: i32,
     comment_markdown: &str,
-) -> ApiResult<()> {
-    sqlx::query(
+    comment_marker: &str,
+    reason: &str,
+) -> ApiResult<bool> {
+    let inserted = sqlx::query(
         r#"
         insert into bot_actions (
-          id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at
+          id, action_type, challenge_id, installation_id, github_repo_id, repo_full_name, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at
         )
-        values ($1, 'CLOSE_PR', $2, $3, $4, $5, 'PENDING', null, null, $6, $6)
+        values ($1, 'UPSERT_PR_COMMENT', $2, $3, $4, $5, $6, $7, 'PENDING', null, null, $8, $8)
         on conflict do nothing
         "#,
     )
     .bind(Uuid::new_v4())
     .bind(challenge_id)
+    .bind(installation_id)
     .bind(github_repo_id)
+    .bind(repo_full_name)
     .bind(github_pr_number)
-    .bind(json!({ "comment_markdown": comment_markdown }))
+    .bind(json!({
+      "comment_markdown": comment_markdown,
+      "comment_marker": comment_marker,
+      "reason": reason
+    }))
     .bind(Utc::now())
     .execute(&state.pool)
     .await?;
-    Ok(())
+    Ok(inserted.rows_affected() > 0)
+}
+
+async fn register_github_delivery(
+    state: &AppState,
+    delivery_id: &str,
+    event_name: &str,
+) -> ApiResult<bool> {
+    let inserted = sqlx::query(
+        r#"
+        insert into github_event_deliveries (delivery_id, event_name, first_seen_at)
+        values ($1, $2, $3)
+        on conflict (delivery_id, event_name) do nothing
+        "#,
+    )
+    .bind(delivery_id)
+    .bind(event_name)
+    .bind(Utc::now())
+    .execute(&state.pool)
+    .await?;
+    Ok(inserted.rows_affected() > 0)
 }
 
 async fn require_current_user(state: &AppState, jar: &CookieJar) -> ApiResult<CurrentUserRow> {
@@ -1792,24 +1736,6 @@ async fn require_repo_owner(
         return Err(ApiError::Forbidden);
     }
     Ok(user)
-}
-
-async fn ensure_bot_client_owner(
-    state: &AppState,
-    owner_user_id: Uuid,
-    bot_client_id: Uuid,
-) -> ApiResult<()> {
-    let exists: Option<Uuid> =
-        sqlx::query_scalar("select id from bot_clients where id = $1 and owner_user_id = $2")
-            .bind(bot_client_id)
-            .bind(owner_user_id)
-            .fetch_optional(&state.pool)
-            .await?;
-    if exists.is_some() {
-        Ok(())
-    } else {
-        Err(ApiError::NotFound)
-    }
 }
 
 async fn verify_internal_from_headers(

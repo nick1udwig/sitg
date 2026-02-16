@@ -50,8 +50,13 @@ async fn process_due_challenges(state: &AppState) -> ApiResult<()> {
     .await?;
 
     for challenge_id in due {
-        let challenge_meta: Option<(i64, i32)> = sqlx::query_as(
-            "select github_repo_id, github_pr_number from pr_challenges where id = $1",
+        let challenge_meta: Option<(i64, i32, i64, String)> = sqlx::query_as(
+            r#"
+            select c.github_repo_id, c.github_pr_number, r.installation_id, r.full_name
+            from pr_challenges c
+            join repo_configs r on r.github_repo_id = c.github_repo_id
+            where c.id = $1
+            "#,
         )
         .bind(challenge_id)
         .fetch_optional(&state.pool)
@@ -89,11 +94,15 @@ async fn process_due_challenges(state: &AppState) -> ApiResult<()> {
             .execute(&state.pool)
             .await?;
 
-            if let Some((github_repo_id, github_pr_number)) = challenge_meta {
+            if let Some((github_repo_id, github_pr_number, installation_id, repo_full_name)) =
+                challenge_meta
+            {
                 queue_bot_action(
                     state,
                     challenge_id,
+                    installation_id,
                     github_repo_id,
+                    &repo_full_name,
                     github_pr_number,
                     "Stake verification was not completed within 30 minutes, so this PR has been closed.",
                     json!({"source":"deadline_sweeper"}),
@@ -109,27 +118,34 @@ async fn process_due_challenges(state: &AppState) -> ApiResult<()> {
 async fn queue_bot_action(
     state: &AppState,
     challenge_id: Uuid,
+    installation_id: i64,
     github_repo_id: i64,
+    repo_full_name: &str,
     github_pr_number: i32,
     comment_markdown: &str,
     extra_payload: Value,
 ) -> ApiResult<()> {
+    let comment_marker = format!("sitg:timeout:{challenge_id}");
     let payload = json!({
       "comment_markdown": comment_markdown,
+      "comment_marker": comment_marker,
+      "reason": "CHALLENGE_TIMEOUT",
       "extra": extra_payload
     });
     sqlx::query(
         r#"
         insert into bot_actions (
-          id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at
+          id, action_type, challenge_id, installation_id, github_repo_id, repo_full_name, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at
         )
-        values ($1, 'CLOSE_PR', $2, $3, $4, $5, 'PENDING', null, null, $6, $6)
+        values ($1, 'CLOSE_PR_WITH_COMMENT', $2, $3, $4, $5, $6, $7, 'PENDING', null, null, $8, $8)
         on conflict do nothing
         "#,
     )
     .bind(Uuid::new_v4())
     .bind(challenge_id)
+    .bind(installation_id)
     .bind(github_repo_id)
+    .bind(repo_full_name)
     .bind(github_pr_number)
     .bind(payload)
     .bind(Utc::now())

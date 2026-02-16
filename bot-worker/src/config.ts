@@ -15,15 +15,10 @@ export type AppConfig = {
   backendInternalHmacSecret: string;
   githubAppId: string;
   githubAppPrivateKey: string;
-  deadlineInternalToken?: string;
-  exemptCommentEnabled: boolean;
-  stateFilePath: string;
   workerId: string;
   outboxPollingEnabled: boolean;
   outboxPollIntervalMs: number;
   outboxClaimLimit: number;
-  enableLocalDeadlineTimers: boolean;
-  defaultInstallationId?: number;
 };
 
 export const readConfig = (): AppConfig => {
@@ -45,15 +40,6 @@ export const readConfig = (): AppConfig => {
     throw new Error(`Invalid OUTBOX_CLAIM_LIMIT value: ${outboxClaimLimitRaw}`);
   }
 
-  const defaultInstallationIdRaw = process.env.DEFAULT_INSTALLATION_ID;
-  const defaultInstallationId = defaultInstallationIdRaw ? Number.parseInt(defaultInstallationIdRaw, 10) : undefined;
-  if (
-    defaultInstallationIdRaw &&
-    (defaultInstallationId === undefined || !Number.isFinite(defaultInstallationId) || defaultInstallationId <= 0)
-  ) {
-    throw new Error(`Invalid DEFAULT_INSTALLATION_ID value: ${defaultInstallationIdRaw}`);
-  }
-
   return {
     port,
     githubWebhookSecret: must(process.env.GITHUB_WEBHOOK_SECRET, "GITHUB_WEBHOOK_SECRET"),
@@ -66,18 +52,10 @@ export const readConfig = (): AppConfig => {
       "BACKEND_INTERNAL_HMAC_SECRET",
     ),
     githubAppId: must(process.env.GITHUB_APP_ID, "GITHUB_APP_ID"),
-    githubAppPrivateKey: must(process.env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY").replace(
-      /\\n/g,
-      "\n",
-    ),
-    deadlineInternalToken: process.env.DEADLINE_INTERNAL_TOKEN,
-    exemptCommentEnabled: process.env.EXEMPT_COMMENT_ENABLED === "true",
-    stateFilePath: process.env.BOT_STATE_FILE ?? "./data/bot-state.json",
+    githubAppPrivateKey: must(process.env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY").replace(/\\n/g, "\n"),
     workerId: process.env.WORKER_ID ?? `bot-worker-${process.pid}`,
     outboxPollingEnabled: process.env.OUTBOX_POLLING_ENABLED !== "false",
     outboxPollIntervalMs,
     outboxClaimLimit,
-    enableLocalDeadlineTimers: process.env.ENABLE_LOCAL_DEADLINE_TIMERS === "true",
-    defaultInstallationId,
   };
 };

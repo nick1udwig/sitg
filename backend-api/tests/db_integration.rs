@@ -26,6 +26,14 @@ async fn apply_migrations(pool: &PgPool) {
     pool.execute(include_str!("../migrations/0005_bot_tenant_auth.sql"))
         .await
         .expect("apply 0005");
+    pool.execute(include_str!(
+        "../migrations/0006_user_sessions_github_access_token.sql"
+    ))
+    .await
+    .expect("apply 0006");
+    pool.execute(include_str!("../migrations/0007_centralized_bot_reset.sql"))
+        .await
+        .expect("apply 0007");
 }
 
 #[tokio::test]
@@ -61,11 +69,52 @@ async fn replay_signature_is_unique() {
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL postgres"]
+async fn github_delivery_is_unique_by_event_name() {
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
+    apply_migrations(&pool).await;
+
+    let delivery = format!("delivery-{}", Uuid::new_v4());
+    sqlx::query(
+        "insert into github_event_deliveries (delivery_id, event_name, first_seen_at) values ($1, 'pull_request', now())",
+    )
+    .bind(&delivery)
+    .execute(&pool)
+    .await
+    .expect("first insert");
+
+    let duplicate = sqlx::query(
+        "insert into github_event_deliveries (delivery_id, event_name, first_seen_at) values ($1, 'pull_request', now())",
+    )
+    .bind(&delivery)
+    .execute(&pool)
+    .await;
+    assert!(duplicate.is_err(), "same delivery+event should fail");
+
+    sqlx::query(
+        "insert into github_event_deliveries (delivery_id, event_name, first_seen_at) values ($1, 'installation', now())",
+    )
+    .bind(&delivery)
+    .execute(&pool)
+    .await
+    .expect("same delivery id with different event is allowed");
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL postgres"]
 async fn bot_actions_pending_unique_for_challenge() {
     let Some(pool) = maybe_pool().await else {
         return;
     };
     apply_migrations(&pool).await;
+
+    sqlx::query(
+        "insert into github_installations (installation_id, account_login, account_type, active, created_at, updated_at) values (1, 'org', 'Organization', true, now(), now()) on conflict (installation_id) do nothing",
+    )
+    .execute(&pool)
+    .await
+    .expect("installation");
 
     let challenge_id = Uuid::new_v4();
     sqlx::query(
@@ -85,7 +134,7 @@ async fn bot_actions_pending_unique_for_challenge() {
     .expect("insert challenge");
 
     sqlx::query(
-        "insert into bot_actions (id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at) values ($1, 'CLOSE_PR', $2, 1, 1, '{}'::jsonb, 'PENDING', null, null, now(), now())",
+        "insert into bot_actions (id, action_type, challenge_id, installation_id, github_repo_id, repo_full_name, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at) values ($1, 'CLOSE_PR_WITH_COMMENT', $2, 1, 1, 'org/repo', 1, '{}'::jsonb, 'PENDING', null, null, now(), now())",
     )
     .bind(Uuid::new_v4())
     .bind(challenge_id)
@@ -94,7 +143,7 @@ async fn bot_actions_pending_unique_for_challenge() {
     .expect("first action");
 
     let second = sqlx::query(
-        "insert into bot_actions (id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at) values ($1, 'CLOSE_PR', $2, 1, 1, '{}'::jsonb, 'PENDING', null, null, now(), now())",
+        "insert into bot_actions (id, action_type, challenge_id, installation_id, github_repo_id, repo_full_name, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at) values ($1, 'CLOSE_PR_WITH_COMMENT', $2, 1, 1, 'org/repo', 1, '{}'::jsonb, 'PENDING', null, null, now(), now())",
     )
     .bind(Uuid::new_v4())
     .bind(challenge_id)
@@ -109,247 +158,63 @@ async fn bot_actions_pending_unique_for_challenge() {
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL postgres"]
-async fn bot_action_result_lifecycle() {
+async fn bot_action_claim_and_result_v2_lifecycle() {
     let Some(pool) = maybe_pool().await else {
         return;
     };
     apply_migrations(&pool).await;
 
-    let id = Uuid::new_v4();
     sqlx::query(
-        "insert into bot_actions (id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at, claimed_by, failure_reason, attempts) values ($1, 'CLOSE_PR', null, 9, 42, '{}'::jsonb, 'CLAIMED', now(), null, now(), now(), 'worker-a', null, 1)",
+        "insert into github_installations (installation_id, account_login, account_type, active, created_at, updated_at) values (9, 'org9', 'Organization', true, now(), now()) on conflict (installation_id) do nothing",
     )
-    .bind(id)
+    .execute(&pool)
+    .await
+    .expect("installation");
+
+    let action_id = Uuid::new_v4();
+    sqlx::query(
+        "insert into bot_actions (id, action_type, challenge_id, installation_id, github_repo_id, repo_full_name, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at, claimed_by, failure_reason, attempts) values ($1, 'UPSERT_PR_COMMENT', null, 9, 9, 'org9/repo', 1, '{}'::jsonb, 'PENDING', null, null, now(), now(), null, null, 0)",
+    )
+    .bind(action_id)
     .execute(&pool)
     .await
     .expect("insert action");
 
-    let done = sqlx::query(
-        "update bot_actions set status = 'DONE', completed_at = now(), failure_reason = null, updated_at = now() where id = $1 and status = 'CLAIMED' and claimed_by = $2",
+    let claimed: Vec<(Uuid, i32)> = sqlx::query_as(
+        r#"
+        update bot_actions
+        set status = 'CLAIMED', claimed_at = now(), claimed_by = 'worker-a', attempts = attempts + 1, updated_at = now()
+        where id in (
+            select id from bot_actions
+            where status = 'PENDING'
+            order by created_at asc
+            limit 50
+            for update skip locked
+        )
+        returning id, attempts
+        "#,
     )
-    .bind(id)
-    .bind("worker-a")
+    .fetch_all(&pool)
+    .await
+    .expect("claim");
+
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].0, action_id);
+    assert_eq!(claimed[0].1, 1);
+
+    let done = sqlx::query(
+        "update bot_actions set status = 'DONE', completed_at = now(), failure_code = null, failure_reason = null, updated_at = now() where id = $1 and status = 'CLAIMED' and claimed_by = 'worker-a'",
+    )
+    .bind(action_id)
     .execute(&pool)
     .await
     .expect("mark done");
     assert_eq!(done.rows_affected(), 1);
 
     let status: String = sqlx::query_scalar("select status from bot_actions where id = $1")
-        .bind(id)
+        .bind(action_id)
         .fetch_one(&pool)
         .await
         .expect("get status");
     assert_eq!(status, "DONE");
-}
-
-#[tokio::test]
-#[ignore = "requires DATABASE_URL postgres"]
-async fn bot_action_claim_filters_by_installation_binding() {
-    let Some(pool) = maybe_pool().await else {
-        return;
-    };
-    apply_migrations(&pool).await;
-
-    let user_id = Uuid::new_v4();
-    sqlx::query(
-        "insert into users (id, github_user_id, github_login, created_at, updated_at) values ($1, 100, 'owner', now(), now())",
-    )
-    .bind(user_id)
-    .execute(&pool)
-    .await
-    .expect("insert owner");
-
-    sqlx::query(
-        "insert into github_installations (installation_id, account_login, account_type, created_at, updated_at) values (101, 'org1', 'Organization', now(), now()), (202, 'org2', 'Organization', now(), now())",
-    )
-    .execute(&pool)
-    .await
-    .expect("insert installations");
-
-    let client_a = Uuid::new_v4();
-    let client_b = Uuid::new_v4();
-    sqlx::query(
-        "insert into bot_clients (id, owner_user_id, name, status, created_at, updated_at) values ($1, $3, 'a', 'ACTIVE', now(), now()), ($2, $3, 'b', 'ACTIVE', now(), now())",
-    )
-    .bind(client_a)
-    .bind(client_b)
-    .bind(user_id)
-    .execute(&pool)
-    .await
-    .expect("insert clients");
-
-    sqlx::query(
-        "insert into bot_installation_bindings (bot_client_id, installation_id, created_at) values ($1, 101, now()), ($2, 202, now())",
-    )
-    .bind(client_a)
-    .bind(client_b)
-    .execute(&pool)
-    .await
-    .expect("insert bindings");
-
-    sqlx::query(
-        r#"
-        insert into repo_configs (
-          github_repo_id, installation_id, full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
-          spot_price_usd, spot_source, spot_at, spot_quote_id, spot_from_cache, created_at, updated_at
-        )
-        values
-          (1, 101, 'org1/repo1', true, 1, 'ETH', 1, 2000, 'coingecko', now(), null, false, now(), now()),
-          (2, 202, 'org2/repo2', true, 1, 'ETH', 1, 2000, 'coingecko', now(), null, false, now(), now())
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .expect("insert repos");
-
-    let a1 = Uuid::new_v4();
-    let a2 = Uuid::new_v4();
-    sqlx::query(
-        "insert into bot_actions (id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at) values ($1, 'CLOSE_PR', null, 1, 10, '{}'::jsonb, 'PENDING', null, null, now(), now()), ($2, 'CLOSE_PR', null, 2, 20, '{}'::jsonb, 'PENDING', null, null, now(), now())",
-    )
-    .bind(a1)
-    .bind(a2)
-    .execute(&pool)
-    .await
-    .expect("insert actions");
-
-    let claimed: Vec<(Uuid, i64)> = sqlx::query_as(
-        r#"
-        update bot_actions a
-        set status = 'CLAIMED', claimed_at = now(), claimed_by = 'worker-a', attempts = attempts + 1, updated_at = now()
-        from repo_configs r
-        where a.github_repo_id = r.github_repo_id
-          and exists (
-            select 1 from bot_installation_bindings b
-            where b.bot_client_id = $1 and b.installation_id = r.installation_id
-          )
-          and a.id in (
-            select a2.id from bot_actions a2
-            join repo_configs r2 on r2.github_repo_id = a2.github_repo_id
-            where a2.status = 'PENDING'
-              and exists (
-                select 1 from bot_installation_bindings b2
-                where b2.bot_client_id = $1 and b2.installation_id = r2.installation_id
-              )
-            order by a2.created_at asc
-            limit 50
-            for update skip locked
-          )
-        returning a.id, a.github_repo_id
-        "#,
-    )
-    .bind(client_a)
-    .fetch_all(&pool)
-    .await
-    .expect("claim");
-
-    assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].1, 1);
-}
-
-#[tokio::test]
-#[ignore = "requires DATABASE_URL postgres"]
-async fn bot_action_result_requires_correct_tenant_binding() {
-    let Some(pool) = maybe_pool().await else {
-        return;
-    };
-    apply_migrations(&pool).await;
-
-    let user_id = Uuid::new_v4();
-    sqlx::query(
-        "insert into users (id, github_user_id, github_login, created_at, updated_at) values ($1, 100, 'owner', now(), now())",
-    )
-    .bind(user_id)
-    .execute(&pool)
-    .await
-    .expect("insert owner");
-
-    sqlx::query(
-        "insert into github_installations (installation_id, account_login, account_type, created_at, updated_at) values (909, 'org9', 'Organization', now(), now())",
-    )
-    .execute(&pool)
-    .await
-    .expect("insert installations");
-
-    let client_a = Uuid::new_v4();
-    let client_b = Uuid::new_v4();
-    sqlx::query(
-        "insert into bot_clients (id, owner_user_id, name, status, created_at, updated_at) values ($1, $3, 'a', 'ACTIVE', now(), now()), ($2, $3, 'b', 'ACTIVE', now(), now())",
-    )
-    .bind(client_a)
-    .bind(client_b)
-    .bind(user_id)
-    .execute(&pool)
-    .await
-    .expect("insert clients");
-
-    sqlx::query(
-        "insert into bot_installation_bindings (bot_client_id, installation_id, created_at) values ($1, 909, now())",
-    )
-    .bind(client_a)
-    .execute(&pool)
-    .await
-    .expect("insert binding");
-
-    sqlx::query(
-        r#"
-        insert into repo_configs (
-          github_repo_id, installation_id, full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
-          spot_price_usd, spot_source, spot_at, spot_quote_id, spot_from_cache, created_at, updated_at
-        )
-        values (9, 909, 'org9/repo', true, 1, 'ETH', 1, 2000, 'coingecko', now(), null, false, now(), now())
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .expect("insert repo");
-
-    let action_id = Uuid::new_v4();
-    sqlx::query(
-        "insert into bot_actions (id, action_type, challenge_id, github_repo_id, github_pr_number, payload, status, claimed_by, claimed_at, completed_at, created_at, updated_at, attempts) values ($1, 'CLOSE_PR', null, 9, 1, '{}'::jsonb, 'CLAIMED', 'worker-a', now(), null, now(), now(), 1)",
-    )
-    .bind(action_id)
-    .execute(&pool)
-    .await
-    .expect("insert action");
-
-    let wrong_tenant = sqlx::query(
-        r#"
-        update bot_actions a
-        set status = 'DONE', completed_at = now(), failure_reason = null, updated_at = now()
-        from repo_configs r
-        where a.github_repo_id = r.github_repo_id
-          and a.id = $1 and a.status = 'CLAIMED' and a.claimed_by = 'worker-a'
-          and exists (
-            select 1 from bot_installation_bindings b
-            where b.bot_client_id = $2 and b.installation_id = r.installation_id
-          )
-        "#,
-    )
-    .bind(action_id)
-    .bind(client_b)
-    .execute(&pool)
-    .await
-    .expect("wrong tenant update");
-    assert_eq!(wrong_tenant.rows_affected(), 0);
-
-    let right_tenant = sqlx::query(
-        r#"
-        update bot_actions a
-        set status = 'DONE', completed_at = now(), failure_reason = null, updated_at = now()
-        from repo_configs r
-        where a.github_repo_id = r.github_repo_id
-          and a.id = $1 and a.status = 'CLAIMED' and a.claimed_by = 'worker-a'
-          and exists (
-            select 1 from bot_installation_bindings b
-            where b.bot_client_id = $2 and b.installation_id = r.installation_id
-          )
-        "#,
-    )
-    .bind(action_id)
-    .bind(client_a)
-    .execute(&pool)
-    .await
-    .expect("right tenant update");
-    assert_eq!(right_tenant.rows_affected(), 1);
 }
