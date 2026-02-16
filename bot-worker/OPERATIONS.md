@@ -1,5 +1,8 @@
 # bot-worker Operations Runbook
 
+Deployment guide:
+- `docs/16-centralized-bot-deployment.md`
+
 ## Observability
 
 - Health endpoint: `GET /healthz`

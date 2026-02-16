@@ -48,3 +48,4 @@ This folder is the top-level product and engineering spec for MVP.
 - `docs/13-production-runbook.md`
 - `docs/14-centralized-bot-interfaces.md`
 - `docs/15-centralized-bot-work-plan.md`
+- `docs/16-centralized-bot-deployment.md`

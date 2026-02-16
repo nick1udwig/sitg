@@ -1,0 +1,92 @@
+name: sitg-local-e2e
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sitg-local-e2e-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sitg
+    ports:
+      - "${LOCAL_E2E_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - sitg_local_pgdata:/var/lib/postgresql/data
+
+  mock-github:
+    image: node:20-bookworm
+    container_name: sitg-local-e2e-mock-github
+    working_dir: /workspace
+    command: >-
+      bash -lc "node scripts/e2e/mock-github.mjs"
+    environment:
+      MOCK_GITHUB_PORT: "9010"
+      MOCK_GITHUB_HOST: "0.0.0.0"
+      MOCK_GITHUB_REPO_MAP: "999=owner/repo"
+    ports:
+      - "${LOCAL_E2E_MOCK_GITHUB_PORT:-19010}:9010"
+    volumes:
+      - ../..:/workspace
+
+  backend:
+    image: rust:1.85-bookworm
+    container_name: sitg-local-e2e-backend
+    working_dir: /workspace/backend-api
+    command: >-
+      bash -lc "source /usr/local/cargo/env && cargo run"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/sitg
+      HOST: 0.0.0.0
+      PORT: "8080"
+      APP_BASE_URL: http://localhost:5173
+      API_BASE_URL: "http://localhost:${LOCAL_E2E_BACKEND_PORT:-18080}"
+      RUST_LOG: info
+    ports:
+      - "${LOCAL_E2E_BACKEND_PORT:-18080}:8080"
+    volumes:
+      - ../..:/workspace
+      - sitg_local_cargo_registry:/usr/local/cargo/registry
+      - sitg_local_cargo_git:/usr/local/cargo/git
+      - sitg_local_backend_target:/workspace/backend-api/target
+    depends_on:
+      - postgres
+
+  bot:
+    image: node:20-bookworm
+    container_name: sitg-local-e2e-bot
+    working_dir: /workspace/bot-worker
+    command: >-
+      bash -lc "
+      npm ci &&
+      npm run build &&
+      openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/github-app.pem >/dev/null 2>&1 &&
+      export GITHUB_APP_PRIVATE_KEY=\"$(cat /tmp/github-app.pem)\" &&
+      node dist/src/index.js
+      "
+    environment:
+      PORT: "3000"
+      GITHUB_WEBHOOK_SECRET: e2e_webhook_secret
+      GITHUB_API_BASE_URL: http://mock-github:9010
+      BACKEND_BASE_URL: http://backend:8080
+      BACKEND_BOT_KEY_ID: e2e_service_key
+      BACKEND_INTERNAL_HMAC_SECRET: e2e_internal_secret
+      GITHUB_APP_ID: "1"
+      WORKER_ID: e2e-bot-worker-1
+      OUTBOX_POLLING_ENABLED: "true"
+      OUTBOX_POLL_INTERVAL_MS: "1000"
+      OUTBOX_CLAIM_LIMIT: "25"
+    ports:
+      - "${LOCAL_E2E_BOT_PORT:-13000}:3000"
+    volumes:
+      - ../..:/workspace
+      - sitg_local_bot_node_modules:/workspace/bot-worker/node_modules
+    depends_on:
+      - backend
+      - mock-github
+
+volumes:
+  sitg_local_pgdata:
+  sitg_local_cargo_registry:
+  sitg_local_cargo_git:
+  sitg_local_backend_target:
+  sitg_local_bot_node_modules:

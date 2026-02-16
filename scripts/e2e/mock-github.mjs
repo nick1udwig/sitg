@@ -7,6 +7,7 @@ const port = Number.parseInt(process.env.MOCK_GITHUB_PORT ?? process.argv[2] ?? 
 if (!Number.isFinite(port) || port <= 0) {
   throw new Error(`Invalid mock GitHub port: ${String(port)}`);
 }
+const host = process.env.MOCK_GITHUB_HOST ?? "127.0.0.1";
 
 const parseRepoMap = () => {
   const raw = process.env.MOCK_GITHUB_REPO_MAP ?? "999=owner/repo";
@@ -175,8 +176,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
+server.listen(port, host, () => {
   // eslint-disable-next-line no-console
-  console.log(`mock-github listening on http://127.0.0.1:${port}`);
+  console.log(`mock-github listening on http://${host}:${port}`);
 });
-
