@@ -3,8 +3,8 @@ use sqlx::PgPool;
 use crate::{
     config::Config,
     services::{
-        github_oauth::GithubOAuthService, quote_service::QuoteService,
-        rate_limiter::RateLimiter, stake_service::StakeService,
+        github_oauth::GithubOAuthService, quote_service::QuoteService, rate_limiter::RateLimiter,
+        stake_service::StakeService,
     },
 };
 

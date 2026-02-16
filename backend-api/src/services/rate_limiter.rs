@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Mutex};
 
 use chrono::Utc;
 
-use crate::{error::{ApiError, ApiResult}};
+use crate::error::{ApiError, ApiResult};
 
 #[derive(Clone)]
 pub struct RateLimiter {

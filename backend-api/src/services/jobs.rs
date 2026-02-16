@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{app::AppState, error::ApiResult};
@@ -170,8 +170,7 @@ async fn cleanup_retention(state: &AppState) -> ApiResult<()> {
 }
 
 fn retention_cutoff(now_unix: i64) -> chrono::DateTime<Utc> {
-    chrono::DateTime::from_timestamp(now_unix, 0)
-        .expect("valid now timestamp")
+    chrono::DateTime::from_timestamp(now_unix, 0).expect("valid now timestamp")
         - chrono::Duration::days(365)
 }
 

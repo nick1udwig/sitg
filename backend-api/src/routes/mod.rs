@@ -21,29 +21,29 @@ use crate::{
     error::{ApiError, ApiResult},
     models::{
         api::{
-            AuthCallbackQuery, AuthStartQuery, ConfirmRequest, ConfirmResponse,
-            ConfirmTypedDataResponse, DeadlineCheckResponse, DeadlineCloseAction, GateResponse,
-            InternalChallengePayload, InternalPrEventRequest, InternalPrEventResponse, MeResponse,
-            RepoConfigPutRequest, RepoConfigResponse, ResolveLoginsRequest, ResolveLoginsResponse,
-            ResolvedLogin, ThresholdResponse, TypedDataDomain, TypedDataMessage,
-            BotActionClaimRequest, BotActionClaimResponse, BotActionItem, BotActionResultRequest,
-            BotActionResultResponse, BotClientDetailResponse, BotClientSummary,
-            CreateBotClientRequest, CreateBotKeyResponse, SetInstallationBindingsRequest,
-            WalletLinkChallengeResponse, WalletLinkConfirmRequest, WalletLinkConfirmResponse,
-            WhitelistPutRequest,
+            AuthCallbackQuery, AuthStartQuery, BotActionClaimRequest, BotActionClaimResponse,
+            BotActionItem, BotActionResultRequest, BotActionResultResponse,
+            BotClientDetailResponse, BotClientSummary, ConfirmRequest, ConfirmResponse,
+            ConfirmTypedDataResponse, CreateBotClientRequest, CreateBotKeyResponse,
+            DeadlineCheckResponse, DeadlineCloseAction, GateResponse, InternalChallengePayload,
+            InternalPrEventRequest, InternalPrEventResponse, MeResponse, RepoConfigPutRequest,
+            RepoConfigResponse, RepoOptionResponse, ResolveLoginsRequest, ResolveLoginsResponse,
+            ResolvedLogin, SetInstallationBindingsRequest, ThresholdResponse, TypedDataDomain,
+            TypedDataMessage, WalletLinkChallengeResponse, WalletLinkConfirmRequest,
+            WalletLinkConfirmResponse, WhitelistPutRequest,
         },
         db::{
             BotActionRow, BotClientSummaryRow, ChallengeRow, CurrentUserRow, RepoConfigRow,
             WalletLinkChallengeRow,
         },
     },
-    services::signature_service::{
-        recover_eip712_pr_confirmation_address, recover_personal_sign_address, uuid_to_bytes32_hex,
-        uuid_to_uint256_decimal,
-    },
     services::internal_auth::{
         encode_bot_secret_for_storage, ensure_installation_bound,
         verify_internal_request as verify_internal_with_key_id,
+    },
+    services::signature_service::{
+        recover_eip712_pr_confirmation_address, recover_personal_sign_address, uuid_to_bytes32_hex,
+        uuid_to_uint256_decimal,
     },
 };
 
@@ -54,7 +54,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/github/callback", get(auth_github_callback))
         .route("/api/v1/auth/logout", post(auth_logout))
         .route("/api/v1/me", get(me))
-        .route("/api/v1/bot-clients", get(list_bot_clients).post(create_bot_client))
+        .route("/api/v1/repos", get(list_owned_repos))
+        .route(
+            "/api/v1/bot-clients",
+            get(list_bot_clients).post(create_bot_client),
+        )
         .route("/api/v1/bot-clients/{bot_client_id}", get(get_bot_client))
         .route(
             "/api/v1/bot-clients/{bot_client_id}/keys",
@@ -95,7 +99,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/internal/v1/challenges/{challenge_id}/deadline-check",
             post(internal_deadline_check),
         )
-        .route("/internal/v1/bot-actions/claim", post(internal_bot_actions_claim))
+        .route(
+            "/internal/v1/bot-actions/claim",
+            post(internal_bot_actions_claim),
+        )
         .route(
             "/internal/v1/bot-actions/{action_id}/result",
             post(internal_bot_action_result),
@@ -166,6 +173,16 @@ async fn auth_github_callback(
             ),
             "cancelled",
             reason,
+        );
+        return Ok((jar, Redirect::temporary(&redirect_to)));
+    }
+
+    if query.state.is_none() && (query.installation_id.is_some() || query.setup_action.is_some()) {
+        let setup_action = query.setup_action.as_deref().unwrap_or("install");
+        let redirect_to = append_install_query(
+            format!("{}/owner", state.config.app_base_url.trim_end_matches('/')),
+            setup_action,
+            query.installation_id,
         );
         return Ok((jar, Redirect::temporary(&redirect_to)));
     }
@@ -270,10 +287,7 @@ async fn auth_logout(
     Ok((jar.remove(delete_cookie), StatusCode::NO_CONTENT))
 }
 
-async fn me(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-) -> ApiResult<Json<MeResponse>> {
+async fn me(State(state): State<Arc<AppState>>, jar: CookieJar) -> ApiResult<Json<MeResponse>> {
     let user = require_current_user(&state, &jar).await?;
     state
         .rate_limiter
@@ -283,6 +297,31 @@ async fn me(
         github_user_id: user.github_user_id,
         github_login: user.github_login,
     }))
+}
+
+async fn list_owned_repos(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> ApiResult<Json<Vec<RepoOptionResponse>>> {
+    let user = require_current_user(&state, &jar).await?;
+    let token = user
+        .github_access_token
+        .as_deref()
+        .ok_or(ApiError::Unauthenticated)?;
+
+    let repos = state
+        .github_oauth_service
+        .list_writable_repos(token)
+        .await?;
+    Ok(Json(
+        repos
+            .into_iter()
+            .map(|repo| RepoOptionResponse {
+                id: repo.id,
+                full_name: repo.full_name,
+            })
+            .collect(),
+    ))
 }
 
 async fn list_bot_clients(
@@ -352,12 +391,11 @@ async fn get_bot_client(
     let user = require_current_user(&state, &jar).await?;
     ensure_bot_client_owner(&state, user.id, bot_client_id).await?;
 
-    let (id, name, status): (Uuid, String, String) = sqlx::query_as(
-        "select id, name, status from bot_clients where id = $1",
-    )
-    .bind(bot_client_id)
-    .fetch_one(&state.pool)
-    .await?;
+    let (id, name, status): (Uuid, String, String) =
+        sqlx::query_as("select id, name, status from bot_clients where id = $1")
+            .bind(bot_client_id)
+            .fetch_one(&state.pool)
+            .await?;
 
     let key_ids: Vec<String> = sqlx::query_scalar(
         "select key_id from bot_client_keys where bot_client_id = $1 and revoked_at is null order by created_at desc",
@@ -534,7 +572,11 @@ async fn put_repo_config(
     jar: CookieJar,
     Json(payload): Json<RepoConfigPutRequest>,
 ) -> ApiResult<Json<RepoConfigResponse>> {
-    let user = require_repo_owner(&state, &jar, repo_id).await?;
+    let user = require_current_user(&state, &jar).await?;
+    let token = user
+        .github_access_token
+        .as_deref()
+        .ok_or(ApiError::Unauthenticated)?;
 
     let input_mode = payload.input_mode.to_uppercase();
     if input_mode != "ETH" && input_mode != "USD" {
@@ -566,35 +608,90 @@ async fn put_repo_config(
     .bind(repo_id)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((full_name, installation_id)) = existing else {
-        return Err(ApiError::NotFound);
+
+    let (full_name, installation_id, created) = if let Some((full_name, installation_id)) = existing
+    {
+        let has_access = state
+            .github_oauth_service
+            .has_repo_write_access(token, &full_name, &user.github_login)
+            .await?;
+        if !has_access {
+            return Err(ApiError::Forbidden);
+        }
+        (full_name, installation_id, false)
+    } else {
+        let repo = state
+            .github_oauth_service
+            .lookup_repo_by_id(token, repo_id)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+        if !repo.can_write {
+            return Err(ApiError::Forbidden);
+        }
+
+        let owner_login = repo
+            .full_name
+            .split('/')
+            .next()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| ApiError::validation("Invalid repository full name"))?;
+
+        let installation_id: Option<i64> = sqlx::query_scalar(
+            r#"
+            select installation_id
+            from github_installations
+            where lower(account_login) = lower($1)
+            order by updated_at desc
+            limit 1
+            "#,
+        )
+        .bind(owner_login)
+        .fetch_optional(&state.pool)
+        .await?;
+
+        let installation_id = installation_id.ok_or_else(|| {
+            ApiError::validation(
+                "GitHub App is not installed for this repository owner yet. Install the app and retry.",
+            )
+        })?;
+
+        (repo.full_name, installation_id, true)
     };
 
     let now = Utc::now();
 
     sqlx::query(
         r#"
-        update repo_configs
-        set draft_prs_gated = $2,
-            threshold_wei = $3,
-            input_mode = $4,
-            input_value = $5,
-            spot_price_usd = $6,
-            spot_source = $7,
-            spot_at = $8,
-            spot_quote_id = $9,
-            spot_from_cache = $10,
-            updated_at = $11
-        where github_repo_id = $1
+        insert into repo_configs (
+            github_repo_id, installation_id, full_name, draft_prs_gated, threshold_wei, input_mode, input_value,
+            spot_price_usd, spot_source, spot_at, spot_quote_id, spot_from_cache, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+        on conflict (github_repo_id) do update
+        set installation_id = excluded.installation_id,
+            full_name = excluded.full_name,
+            draft_prs_gated = excluded.draft_prs_gated,
+            threshold_wei = excluded.threshold_wei,
+            input_mode = excluded.input_mode,
+            input_value = excluded.input_value,
+            spot_price_usd = excluded.spot_price_usd,
+            spot_source = excluded.spot_source,
+            spot_at = excluded.spot_at,
+            spot_quote_id = excluded.spot_quote_id,
+            spot_from_cache = excluded.spot_from_cache,
+            updated_at = excluded.updated_at
         "#,
     )
     .bind(repo_id)
+    .bind(installation_id)
+    .bind(&full_name)
     .bind(payload.draft_prs_gated)
     .bind(threshold_wei)
-    .bind(input_mode)
+    .bind(&input_mode)
     .bind(input_value)
     .bind(quote.price)
-    .bind(quote.source)
+    .bind(&quote.source)
     .bind(quote.fetched_at)
     .bind(quote.quote_id)
     .bind(quote.from_cache)
@@ -604,7 +701,11 @@ async fn put_repo_config(
 
     insert_audit(
         &state,
-        "REPO_CONFIG_UPDATED",
+        if created {
+            "REPO_CONFIG_CREATED"
+        } else {
+            "REPO_CONFIG_UPDATED"
+        },
         "repo",
         repo_id.to_string(),
         json!({
@@ -1039,7 +1140,8 @@ async fn wallet_link_confirm(
     .await?;
 
     let challenge = challenge.ok_or(ApiError::Conflict("WALLET_LINK_CHALLENGE_INVALID"))?;
-    let signed_message = wallet_link_message(user.github_user_id, challenge.nonce, challenge.expires_at);
+    let signed_message =
+        wallet_link_message(user.github_user_id, challenge.nonce, challenge.expires_at);
     let signer = recover_personal_sign_address(&signed_message, &payload.signature)?;
     if !signer.eq_ignore_ascii_case(&wallet_address) {
         return Err(ApiError::Conflict("SIGNER_MISMATCH"));
@@ -1056,11 +1158,13 @@ async fn wallet_link_confirm(
     .execute(&mut *tx)
     .await?;
 
-    sqlx::query("update wallet_links set unlinked_at = $2 where user_id = $1 and unlinked_at is null")
-        .bind(user.id)
-        .bind(Utc::now())
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "update wallet_links set unlinked_at = $2 where user_id = $1 and unlinked_at is null",
+    )
+    .bind(user.id)
+    .bind(Utc::now())
+    .execute(&mut *tx)
+    .await?;
 
     let insert_result = sqlx::query(
         "insert into wallet_links (id, user_id, wallet_address, chain_id, linked_at, unlinked_at) values ($1, $2, $3, 8453, $4, null)",
@@ -1102,11 +1206,12 @@ async fn wallet_unlink(
 ) -> ApiResult<StatusCode> {
     let user = require_current_user(&state, &jar).await?;
 
-    let current_wallet: Option<String> =
-        sqlx::query_scalar("select wallet_address from wallet_links where user_id = $1 and unlinked_at is null")
-            .bind(user.id)
-            .fetch_optional(&state.pool)
-            .await?;
+    let current_wallet: Option<String> = sqlx::query_scalar(
+        "select wallet_address from wallet_links where user_id = $1 and unlinked_at is null",
+    )
+    .bind(user.id)
+    .fetch_optional(&state.pool)
+    .await?;
 
     let Some(wallet_address) = current_wallet else {
         return Ok(StatusCode::NO_CONTENT);
@@ -1117,11 +1222,13 @@ async fn wallet_unlink(
         return Err(ApiError::Conflict("WALLET_HAS_STAKE"));
     }
 
-    sqlx::query("update wallet_links set unlinked_at = $2 where user_id = $1 and unlinked_at is null")
-        .bind(user.id)
-        .bind(Utc::now())
-        .execute(&state.pool)
-        .await?;
+    sqlx::query(
+        "update wallet_links set unlinked_at = $2 where user_id = $1 and unlinked_at is null",
+    )
+    .bind(user.id)
+    .bind(Utc::now())
+    .execute(&state.pool)
+    .await?;
 
     insert_audit(
         &state,
@@ -1140,7 +1247,8 @@ async fn internal_pr_events(
     headers: HeaderMap,
     Json(payload): Json<InternalPrEventRequest>,
 ) -> ApiResult<Json<InternalPrEventResponse>> {
-    let auth = verify_internal_from_headers(&state, &headers, &payload.delivery_id.to_string()).await?;
+    let auth =
+        verify_internal_from_headers(&state, &headers, &payload.delivery_id.to_string()).await?;
     store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
     ensure_installation_bound(&state.pool, auth.bot_client_id, payload.installation_id).await?;
 
@@ -1320,12 +1428,11 @@ async fn internal_deadline_check(
     .await?;
 
     let challenge = challenge.ok_or(ApiError::NotFound)?;
-    let installation_id: i64 = sqlx::query_scalar(
-        "select installation_id from repo_configs where github_repo_id = $1",
-    )
-    .bind(challenge.github_repo_id)
-    .fetch_one(&state.pool)
-    .await?;
+    let installation_id: i64 =
+        sqlx::query_scalar("select installation_id from repo_configs where github_repo_id = $1")
+            .bind(challenge.github_repo_id)
+            .fetch_one(&state.pool)
+            .await?;
     ensure_installation_bound(&state.pool, auth.bot_client_id, installation_id).await?;
 
     if challenge.status == "VERIFIED" || challenge.status == "EXEMPT" {
@@ -1357,11 +1464,13 @@ async fn internal_deadline_check(
     }
 
     if challenge.status == "PENDING" {
-        sqlx::query("update pr_challenges set status = 'TIMED_OUT_CLOSED', updated_at = $2 where id = $1")
-            .bind(challenge.id)
-            .bind(Utc::now())
-            .execute(&state.pool)
-            .await?;
+        sqlx::query(
+            "update pr_challenges set status = 'TIMED_OUT_CLOSED', updated_at = $2 where id = $1",
+        )
+        .bind(challenge.id)
+        .bind(Utc::now())
+        .execute(&state.pool)
+        .await?;
 
         insert_audit(
             &state,
@@ -1548,7 +1657,11 @@ async fn internal_bot_action_result(
         )
         .bind(action_id)
         .bind(&worker_id)
-        .bind(payload.failure_reason.unwrap_or_else(|| "unknown failure".to_string()))
+        .bind(
+            payload
+                .failure_reason
+                .unwrap_or_else(|| "unknown failure".to_string()),
+        )
         .bind(now)
         .bind(auth.bot_client_id)
         .execute(&state.pool)
@@ -1655,13 +1768,12 @@ async fn ensure_bot_client_owner(
     owner_user_id: Uuid,
     bot_client_id: Uuid,
 ) -> ApiResult<()> {
-    let exists: Option<Uuid> = sqlx::query_scalar(
-        "select id from bot_clients where id = $1 and owner_user_id = $2",
-    )
-    .bind(bot_client_id)
-    .bind(owner_user_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let exists: Option<Uuid> =
+        sqlx::query_scalar("select id from bot_clients where id = $1 and owner_user_id = $2")
+            .bind(bot_client_id)
+            .bind(owner_user_id)
+            .fetch_optional(&state.pool)
+            .await?;
     if exists.is_some() {
         Ok(())
     } else {
@@ -1689,7 +1801,11 @@ async fn verify_internal_from_headers(
     verify_internal_with_key_id(&state.pool, key_id, timestamp, signature_hex, message).await
 }
 
-async fn store_internal_replay(state: &AppState, signature_hex: &str, timestamp: i64) -> ApiResult<()> {
+async fn store_internal_replay(
+    state: &AppState,
+    signature_hex: &str,
+    timestamp: i64,
+) -> ApiResult<()> {
     let inserted = sqlx::query(
         r#"
         insert into internal_request_replays (id, signature, timestamp_unix, created_at)
@@ -1731,7 +1847,11 @@ async fn insert_audit(
     Ok(())
 }
 
-fn wallet_link_message(github_user_id: i64, nonce: Uuid, expires_at: chrono::DateTime<Utc>) -> String {
+fn wallet_link_message(
+    github_user_id: i64,
+    nonce: Uuid,
+    expires_at: chrono::DateTime<Utc>,
+) -> String {
     format!(
         "Link wallet for github_user_id={} nonce={} expires_at={}.",
         github_user_id,
@@ -1781,6 +1901,30 @@ fn append_auth_query(base_url: String, auth: &str, reason: &str) -> String {
     }
 }
 
+fn append_install_query(
+    base_url: String,
+    setup_action: &str,
+    installation_id: Option<i64>,
+) -> String {
+    match reqwest::Url::parse(&base_url) {
+        Ok(mut parsed) => {
+            parsed
+                .query_pairs_mut()
+                .append_pair("github_app", "installed");
+            parsed
+                .query_pairs_mut()
+                .append_pair("setup_action", setup_action);
+            if let Some(installation_id) = installation_id {
+                parsed
+                    .query_pairs_mut()
+                    .append_pair("installation_id", &installation_id.to_string());
+            }
+            parsed.into()
+        }
+        Err(_) => base_url,
+    }
+}
+
 fn normalize_wallet_address(address: &str) -> ApiResult<String> {
     let lowered = address.trim().to_lowercase();
     let valid = lowered.len() == 42
@@ -1816,7 +1960,8 @@ fn is_wallet_uniqueness_violation(err: &sqlx::Error) -> bool {
 fn repo_config_row_to_response(row: &RepoConfigRow) -> RepoConfigResponse {
     let wei = row.threshold_wei.normalize().to_string();
     let eth = wei_to_eth_str(&row.threshold_wei);
-    let usd_estimate = (Decimal::from_str_exact(&eth).unwrap_or(Decimal::ZERO) * row.spot_price_usd)
+    let usd_estimate = (Decimal::from_str_exact(&eth).unwrap_or(Decimal::ZERO)
+        * row.spot_price_usd)
         .round_dp(2)
         .normalize()
         .to_string();
@@ -1939,8 +2084,28 @@ mod tests {
 
     #[test]
     fn appends_auth_query_to_redirect() {
-        let redirect = append_auth_query("https://sitg.io/owner?tab=setup".to_string(), "cancelled", "access_denied");
-        assert_eq!(redirect, "https://sitg.io/owner?tab=setup&auth=cancelled&reason=access_denied");
+        let redirect = append_auth_query(
+            "https://sitg.io/owner?tab=setup".to_string(),
+            "cancelled",
+            "access_denied",
+        );
+        assert_eq!(
+            redirect,
+            "https://sitg.io/owner?tab=setup&auth=cancelled&reason=access_denied"
+        );
+    }
+
+    #[test]
+    fn appends_install_query_to_redirect() {
+        let redirect = append_install_query(
+            "https://sitg.io/owner?tab=repo-info".to_string(),
+            "install",
+            Some(110417326),
+        );
+        assert_eq!(
+            redirect,
+            "https://sitg.io/owner?tab=repo-info&github_app=installed&setup_action=install&installation_id=110417326"
+        );
     }
 
     #[test]
@@ -1954,11 +2119,10 @@ mod tests {
         let normalized = truncate_to_micros(raw);
 
         let issued = wallet_link_message(2002, nonce, normalized);
-        let from_db =
-            chrono::DateTime::<Utc>::from_timestamp_micros(normalized.timestamp_micros()).expect("from micros");
+        let from_db = chrono::DateTime::<Utc>::from_timestamp_micros(normalized.timestamp_micros())
+            .expect("from micros");
         let verified = wallet_link_message(2002, nonce, from_db);
 
         assert_eq!(issued, verified);
     }
-
 }

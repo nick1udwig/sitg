@@ -15,9 +15,11 @@ async fn apply_migrations(pool: &PgPool) {
     pool.execute(include_str!("../migrations/0002_auth_wallet.sql"))
         .await
         .expect("apply 0002");
-    pool.execute(include_str!("../migrations/0003_internal_replay_and_outbox.sql"))
-        .await
-        .expect("apply 0003");
+    pool.execute(include_str!(
+        "../migrations/0003_internal_replay_and_outbox.sql"
+    ))
+    .await
+    .expect("apply 0003");
     pool.execute(include_str!("../migrations/0004_bot_action_results.sql"))
         .await
         .expect("apply 0004");
@@ -99,7 +101,10 @@ async fn bot_actions_pending_unique_for_challenge() {
     .execute(&pool)
     .await;
 
-    assert!(second.is_err(), "duplicate pending close action should fail");
+    assert!(
+        second.is_err(),
+        "duplicate pending close action should fail"
+    );
 }
 
 #[tokio::test]

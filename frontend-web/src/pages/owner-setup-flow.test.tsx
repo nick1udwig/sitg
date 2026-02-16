@@ -210,4 +210,32 @@ describe('OwnerPage flow', () => {
       expect(apiMocks.getInstallStatus).toHaveBeenCalledWith('999');
     });
   });
+
+  it('recovers from stale selected repo id in local storage', async () => {
+    const user = userEvent.setup();
+    localStorage.setItem('sitg.selectedRepo', JSON.stringify({ id: '1', fullName: 'owner/unknown' }));
+    localStorage.setItem('sitg.recentRepos', JSON.stringify([{ id: '1', fullName: 'owner/unknown' }]));
+
+    renderPage();
+    await screen.findAllByRole('button', { name: 'owner/repo' });
+
+    await waitFor(() => {
+      expect(apiMocks.getRepoConfig).toHaveBeenCalledWith('999');
+      expect(apiMocks.getInstallStatus).toHaveBeenCalledWith('999');
+    });
+
+    expect(apiMocks.getRepoConfig).not.toHaveBeenCalledWith('1');
+
+    const thresholdTabs = screen.getAllByRole('button', { name: 'Threshold & Whitelist' });
+    await user.click(thresholdTabs[thresholdTabs.length - 1]);
+    const saveButtons = screen.getAllByRole('button', { name: 'Save Config' });
+    await user.click(saveButtons[saveButtons.length - 1]);
+    await waitFor(() => {
+      expect(apiMocks.putRepoConfig).toHaveBeenCalledWith('999', {
+        input_mode: 'ETH',
+        input_value: '1',
+        draft_prs_gated: true
+      });
+    });
+  });
 });

@@ -833,7 +833,8 @@ button.toast-close:hover:not(:disabled) {
   display: grid;
   grid-template-columns: 240px 1fr;
   gap: 24px;
-  min-height: calc(100vh - 100px);
+  height: calc(100vh - 100px);
+  overflow: hidden;
 }
 
 .owner-sidebar {
@@ -841,6 +842,13 @@ button.toast-close:hover:not(:disabled) {
   flex-direction: column;
   border-right: 1px solid var(--line);
   padding-right: 20px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.owner-shell > main {
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .owner-sidebar-list {
@@ -932,6 +940,8 @@ button.toast-close:hover:not(:disabled) {
 
   .owner-shell {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
   }
 
   .owner-sidebar {
@@ -939,5 +949,7 @@ button.toast-close:hover:not(:disabled) {
     border-bottom: 1px solid var(--line);
     padding-right: 0;
     padding-bottom: 16px;
+    overflow-y: visible;
+    min-height: auto;
   }
 }

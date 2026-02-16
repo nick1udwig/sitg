@@ -16,6 +16,7 @@ import {
 } from '../api';
 import { toUserMessage } from '../lib/error-map';
 import { useAppState } from '../state';
+import type { RepoSelection } from '../state';
 import { OwnerSidebar } from '../components/OwnerSidebar';
 import { OwnerTabs } from '../components/OwnerTabs';
 import type { OwnerTabId } from '../components/OwnerTabs';
@@ -54,6 +55,12 @@ export function OwnerPage() {
   const [createdKeySecret, setCreatedKeySecret] = useState<string | null>(null);
 
   const selectedRepo = state.selectedRepo;
+  const selectedOwnedRepo = useMemo<RepoSelection | null>(() => {
+    if (!selectedRepo) return null;
+    const match = repoOptions.find((repo) => String(repo.id) === selectedRepo.id);
+    if (!match) return null;
+    return { id: String(match.id), fullName: match.full_name };
+  }, [repoOptions, selectedRepo]);
 
   async function refreshBotClients(): Promise<void> {
     const clients = await listBotClients();
@@ -79,7 +86,20 @@ export function OwnerPage() {
     void Promise.all([getOwnedRepos(), listBotClients()])
       .then(([repos, clients]) => {
         if (!mounted) return;
-        if (repos) setRepoOptions(repos);
+        if (repos) {
+          setRepoOptions(repos);
+          if (repos.length) {
+            const selectedId = state.selectedRepo?.id ?? '';
+            const selectedIsOwned = repos.some((repo) => String(repo.id) === selectedId);
+            if (!selectedIsOwned) {
+              const first = repos[0];
+              setRepo({ id: String(first.id), fullName: first.full_name });
+              if (selectedId) {
+                pushNotice('info', 'Switched to an owned repository because the previous selection is no longer available.');
+              }
+            }
+          }
+        }
         if (clients) {
           setBotClients(clients);
           setSelectedBotClientId((prev) => (prev || (clients.length ? clients[0].id : '')));
@@ -90,10 +110,10 @@ export function OwnerPage() {
       });
 
     return () => { mounted = false; };
-  }, [state.me, pushNotice]);
+  }, [state.me, state.selectedRepo?.id, setRepo, pushNotice]);
 
   useEffect(() => {
-    if (!selectedRepo || !state.me) {
+    if (!selectedOwnedRepo || !state.me) {
       setConfig(null);
       setInstallStatus('unknown');
       return;
@@ -102,7 +122,7 @@ export function OwnerPage() {
     let mounted = true;
     setLoadingConfig(true);
 
-    void Promise.all([getRepoConfig(selectedRepo.id).catch(() => null), getInstallStatus(selectedRepo.id).catch(() => null)])
+    void Promise.all([getRepoConfig(selectedOwnedRepo.id).catch(() => null), getInstallStatus(selectedOwnedRepo.id).catch(() => null)])
       .then(([repoConfig, install]) => {
         if (!mounted) return;
 
@@ -115,7 +135,6 @@ export function OwnerPage() {
           });
         } else {
           setConfig(null);
-          pushNotice('info', `No existing config yet for repo ${selectedRepo.id}. Save to create one.`);
         }
 
         if (install) {
@@ -132,7 +151,7 @@ export function OwnerPage() {
       });
 
     return () => { mounted = false; };
-  }, [selectedRepo, state.me, pushNotice]);
+  }, [selectedOwnedRepo, state.me, pushNotice]);
 
   const summary = useMemo(() => {
     if (!config) {
@@ -146,10 +165,10 @@ export function OwnerPage() {
 
   const handleSaveConfig = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (!selectedRepo) { pushNotice('error', 'Select a repository first.'); return; }
+    if (!selectedOwnedRepo) { pushNotice('error', 'Select one of your owned repositories first.'); return; }
 
     const result = await runBusy('save-config', async () =>
-      putRepoConfig(selectedRepo.id, {
+      putRepoConfig(selectedOwnedRepo.id, {
         input_mode: configForm.inputMode,
         input_value: configForm.inputValue,
         draft_prs_gated: configForm.draftPrsGated
@@ -158,21 +177,21 @@ export function OwnerPage() {
 
     if (!result) { pushNotice('error', 'Saving config failed.'); return; }
     setConfig(result);
-    pushNotice('success', `Saved config for ${selectedRepo.fullName}. Enforced ETH: ${result.threshold.eth}.`);
+    pushNotice('success', `Saved config for ${selectedOwnedRepo.fullName}. Enforced ETH: ${result.threshold.eth}.`);
   };
 
   const handleSaveWhitelist = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (!selectedRepo) { pushNotice('error', 'Select a repository first.'); return; }
+    if (!selectedOwnedRepo) { pushNotice('error', 'Select one of your owned repositories first.'); return; }
 
     const logins = whitelistInput.split(',').map((v) => v.trim()).filter(Boolean);
     if (!logins.length) { pushNotice('info', 'Provide at least one GitHub login.'); return; }
 
-    const resolved = await runBusy('save-whitelist', () => resolveWhitelistLogins(selectedRepo.id, logins));
+    const resolved = await runBusy('save-whitelist', () => resolveWhitelistLogins(selectedOwnedRepo.id, logins));
     if (!resolved) { pushNotice('error', 'Whitelist login resolution failed.'); return; }
 
     const saved = await runBusy('save-whitelist', async () => {
-      await putWhitelist(selectedRepo.id, resolved.resolved);
+      await putWhitelist(selectedOwnedRepo.id, resolved.resolved);
       return true;
     });
 

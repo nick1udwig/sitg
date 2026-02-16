@@ -12,6 +12,8 @@ pub struct AuthCallbackQuery {
     pub code: Option<String>,
     pub state: Option<String>,
     pub error: Option<String>,
+    pub installation_id: Option<i64>,
+    pub setup_action: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -19,6 +21,12 @@ pub struct MeResponse {
     pub id: String,
     pub github_user_id: i64,
     pub github_login: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RepoOptionResponse {
+    pub id: i64,
+    pub full_name: String,
 }
 
 #[derive(Debug, Deserialize)]

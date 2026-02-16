@@ -69,8 +69,9 @@ pub fn recover_eip712_pr_confirmation_address(
       }
     });
 
-    let typed_data: ethers_core::types::transaction::eip712::TypedData = serde_json::from_value(typed_data)
-        .map_err(|_| ApiError::validation("failed to construct typed data"))?;
+    let typed_data: ethers_core::types::transaction::eip712::TypedData =
+        serde_json::from_value(typed_data)
+            .map_err(|_| ApiError::validation("failed to construct typed data"))?;
     let digest = typed_data
         .encode_eip712()
         .map_err(|_| ApiError::validation("failed to hash typed data"))?;

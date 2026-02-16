@@ -3,7 +3,10 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{error::{ApiError, ApiResult}, models::db::{CoinGeckoPriceEnvelope, SpotQuoteRow}};
+use crate::{
+    error::{ApiError, ApiResult},
+    models::db::{CoinGeckoPriceEnvelope, SpotQuoteRow},
+};
 
 #[derive(Clone)]
 pub struct QuoteService {

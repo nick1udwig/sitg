@@ -64,7 +64,11 @@ impl StakeService {
         })
     }
 
-    async fn eth_call_address_u256(&self, function_sig: &str, wallet_address: &str) -> ApiResult<String> {
+    async fn eth_call_address_u256(
+        &self,
+        function_sig: &str,
+        wallet_address: &str,
+    ) -> ApiResult<String> {
         let rpc_url = self
             .rpc_url
             .as_ref()
