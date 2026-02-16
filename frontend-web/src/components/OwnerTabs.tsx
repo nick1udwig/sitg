@@ -1,4 +1,4 @@
-export type OwnerTabId = 'repo-info' | 'threshold-whitelist' | 'github-bot';
+export type OwnerTabId = 'repo-info' | 'threshold-whitelist';
 
 interface OwnerTabsProps {
   active: OwnerTabId;
@@ -7,8 +7,7 @@ interface OwnerTabsProps {
 
 const TABS: { id: OwnerTabId; label: string }[] = [
   { id: 'repo-info', label: 'Repo Info' },
-  { id: 'threshold-whitelist', label: 'Threshold & Whitelist' },
-  { id: 'github-bot', label: 'GitHub Bot' }
+  { id: 'threshold-whitelist', label: 'Threshold & Whitelist' }
 ];
 
 export function OwnerTabs({ active, onSelect }: OwnerTabsProps) {

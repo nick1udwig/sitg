@@ -5,19 +5,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppStateProvider, useAppState } from '../state';
 
 const apiMocks = vi.hoisted(() => ({
-  createBotClient: vi.fn(),
-  createBotClientKey: vi.fn(),
   getInstallStatus: vi.fn(),
   getOwnedRepos: vi.fn(),
   getRepoConfig: vi.fn(),
   githubSignIn: vi.fn(),
-  listBotClients: vi.fn(),
   logout: vi.fn(),
   putRepoConfig: vi.fn(),
   putWhitelist: vi.fn(),
-  resolveWhitelistLogins: vi.fn(),
-  revokeBotClientKey: vi.fn(),
-  setBotInstallationBindings: vi.fn()
+  resolveWhitelistLogins: vi.fn()
 }));
 
 vi.mock('../api', async () => {
@@ -62,14 +57,6 @@ describe('OwnerPage flow', () => {
       { id: 999, full_name: 'owner/repo' },
       { id: 888, full_name: 'owner/other' }
     ]);
-    apiMocks.listBotClients.mockResolvedValue([
-      {
-        id: 'bc_1',
-        name: 'owner-bot',
-        installation_ids: [123],
-        keys: [{ key_id: 'bck_existing' }]
-      }
-    ]);
     apiMocks.getRepoConfig.mockResolvedValue({
       github_repo_id: 999,
       threshold: {
@@ -87,7 +74,13 @@ describe('OwnerPage flow', () => {
       },
       draft_prs_gated: true
     });
-    apiMocks.getInstallStatus.mockResolvedValue({ installed: true, installation_id: 123 });
+    apiMocks.getInstallStatus.mockResolvedValue({
+      installed: true,
+      installation_id: 123,
+      installation_account_login: 'owner',
+      installation_account_type: 'User',
+      repo_connected: true
+    });
     apiMocks.putRepoConfig.mockResolvedValue({
       github_repo_id: 999,
       threshold: {
@@ -110,22 +103,10 @@ describe('OwnerPage flow', () => {
       unresolved: ['ghost']
     });
     apiMocks.putWhitelist.mockResolvedValue(undefined);
-    apiMocks.createBotClient.mockResolvedValue({
-      id: 'bc_2',
-      name: 'new-owner-bot',
-      created_at: '2026-02-13T00:00:00Z'
-    });
-    apiMocks.createBotClientKey.mockResolvedValue({
-      key_id: 'bck_live_new',
-      secret: 'sitgbs_live_secret',
-      created_at: '2026-02-13T00:00:00Z'
-    });
-    apiMocks.revokeBotClientKey.mockResolvedValue(undefined);
-    apiMocks.setBotInstallationBindings.mockResolvedValue(undefined);
     apiMocks.logout.mockResolvedValue(undefined);
   });
 
-  it('covers repository config, whitelist, and bot management actions', async () => {
+  it('covers repository config, whitelist, and repo info github app metadata', async () => {
     const user = userEvent.setup();
     renderPage();
 
@@ -137,6 +118,9 @@ describe('OwnerPage flow', () => {
       expect(apiMocks.getRepoConfig).toHaveBeenCalledWith('999');
       expect(apiMocks.getInstallStatus).toHaveBeenCalledWith('999');
     });
+    expect(screen.getByText('123')).toBeTruthy();
+    expect(screen.getByText('owner')).toBeTruthy();
+    expect(screen.getByText('User')).toBeTruthy();
 
     // Navigate to Threshold & Whitelist tab
     await user.click(screen.getByRole('button', { name: 'Threshold & Whitelist' }));
@@ -163,32 +147,8 @@ describe('OwnerPage flow', () => {
       expect(apiMocks.putWhitelist).toHaveBeenCalledWith('999', [{ github_user_id: 3003, github_login: 'alice' }]);
     });
 
-    // Navigate to GitHub Bot tab
-    await user.click(screen.getByRole('button', { name: 'GitHub Bot' }));
-
-    await user.click(screen.getByRole('button', { name: 'Create Key' }));
-    await waitFor(() => {
-      expect(apiMocks.createBotClientKey).toHaveBeenCalledWith('bc_1');
-    });
-    expect(await screen.findByText(/Secret \(shown once\)/)).toBeTruthy();
-
-    await user.type(screen.getByLabelText('Revoke key ID'), 'bck_existing');
-    await user.click(screen.getByRole('button', { name: 'Revoke Key' }));
-    await waitFor(() => {
-      expect(apiMocks.revokeBotClientKey).toHaveBeenCalledWith('bc_1', 'bck_existing');
-    });
-
-    await user.type(screen.getByLabelText('Installation IDs (comma separated)'), '123, 456');
-    await user.click(screen.getByRole('button', { name: 'Save Bindings' }));
-    await waitFor(() => {
-      expect(apiMocks.setBotInstallationBindings).toHaveBeenCalledWith('bc_1', [123, 456]);
-    });
-
-    await user.type(screen.getByLabelText('Name'), 'new-owner-bot');
-    await user.click(screen.getByRole('button', { name: 'Create Bot Client' }));
-    await waitFor(() => {
-      expect(apiMocks.createBotClient).toHaveBeenCalledWith('new-owner-bot');
-    });
+    await user.click(screen.getByRole('button', { name: 'Repo Info' }));
+    expect(screen.getByRole('link', { name: 'Install App' })).toBeTruthy();
   });
 
   it('allows adding a repo by full name when repo id is left empty', async () => {

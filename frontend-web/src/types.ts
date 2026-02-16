@@ -46,48 +46,10 @@ export interface RepoOption {
 
 export interface InstallStatusResponse {
   installed: boolean;
-  installation_id?: number;
-}
-
-export interface WalletLinkStatusResponse {
-  wallet_address: string;
-  chain_id: number;
-  linked_at: string;
-}
-
-export interface StakeStatusResponse {
-  staked_balance_wei: string;
-  unlock_time: string;
-  lock_active: boolean;
-}
-
-export interface BotClientKey {
-  key_id: string;
-  created_at?: string;
-  revoked_at?: string | null;
-  is_active?: boolean;
-}
-
-export interface BotClient {
-  id: string;
-  name: string;
-  is_active?: boolean;
-  created_at?: string;
-  installation_ids?: number[];
-  keys?: BotClientKey[];
-}
-
-export interface CreateBotClientResponse {
-  id: string;
-  name: string;
-  is_active?: boolean;
-  created_at?: string;
-}
-
-export interface CreateBotKeyResponse {
-  key_id: string;
-  secret: string;
-  created_at: string;
+  installation_id: number | null;
+  installation_account_login: string | null;
+  installation_account_type: string | null;
+  repo_connected: boolean;
 }
 
 export interface WhitelistEntry {
@@ -147,4 +109,16 @@ export interface WalletLinkChallengeResponse {
 export interface WalletLinkConfirmResponse {
   wallet_address: string;
   linked: boolean;
+}
+
+export interface WalletLinkStatusResponse {
+  wallet_address: string;
+  chain_id: number;
+  linked_at: string;
+}
+
+export interface StakeStatusResponse {
+  staked_balance_wei: string;
+  unlock_time: string;
+  lock_active: boolean;
 }

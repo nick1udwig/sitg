@@ -4,7 +4,7 @@ React + Vite frontend for SITG MVP.
 
 ## Features implemented
 
-- Owner setup page with sign-in, GitHub App install CTA, repo picker, config save, whitelist save, and bot client/key/installation binding management.
+- Owner setup page with sign-in, GitHub App install CTA, repo picker, config save, whitelist save, and centralized GitHub App status.
 - Contributor gate at `/g/:gateToken` with countdown, wallet linking, typed-data confirmation.
 - Wallet management page with link/unlink actions.
 - Desktop-only gate.
@@ -19,7 +19,7 @@ This frontend matches the current Rust backend API responses in `backend-api/src
 Optional integration endpoints supported with graceful fallback (UI still works if absent):
 
 - `GET /api/v1/repos`
-- `GET /api/v1/github/installations/status?repo_id=...`
+- `GET /api/v1/repos/{repo_id}/github-app-status`
 - `GET /api/v1/wallet/link`
 - `GET /api/v1/stake/status?wallet=...`
 

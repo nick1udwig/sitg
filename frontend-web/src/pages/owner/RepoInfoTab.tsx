@@ -1,8 +1,10 @@
 import type { RepoSelection } from '../../state';
+import type { InstallStatusResponse } from '../../types';
 
 interface RepoInfoTabProps {
   selectedRepo: RepoSelection | null;
   installStatus: 'installed' | 'not-installed' | 'unknown';
+  installDetails: InstallStatusResponse | null;
   installUrl: string;
 }
 
@@ -12,7 +14,7 @@ const INSTALL_DOT: Record<string, string> = {
   unknown: 'gray'
 };
 
-export function RepoInfoTab({ selectedRepo, installStatus, installUrl }: RepoInfoTabProps) {
+export function RepoInfoTab({ selectedRepo, installStatus, installDetails, installUrl }: RepoInfoTabProps) {
   return (
     <article className="card">
       <h2>Repository Info</h2>
@@ -32,6 +34,12 @@ export function RepoInfoTab({ selectedRepo, installStatus, installUrl }: RepoInf
             {installStatus}
           </span>
         </dd>
+        <dt>Installation ID</dt>
+        <dd>{installDetails?.installation_id ?? <span style={{ color: 'var(--ink-soft)' }}>unknown</span>}</dd>
+        <dt>Account</dt>
+        <dd>{installDetails?.installation_account_login ?? <span style={{ color: 'var(--ink-soft)' }}>unknown</span>}</dd>
+        <dt>Account type</dt>
+        <dd>{installDetails?.installation_account_type ?? <span style={{ color: 'var(--ink-soft)' }}>unknown</span>}</dd>
       </dl>
 
       <div className="row-wrap">

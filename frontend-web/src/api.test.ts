@@ -1,19 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  createBotClient,
-  createBotClientKey,
   confirmWalletLink,
   getInstallStatus,
   getMe,
   getOwnedRepos,
   getStakeStatus,
   getWalletLinkStatus,
-  listBotClients,
   putRepoConfig,
-  revokeBotClientKey,
   requestWalletLinkChallenge,
   resolveWhitelistLogins,
-  setBotInstallationBindings,
   submitGateConfirmation,
   unlinkWallet
 } from './api';
@@ -135,23 +130,21 @@ describe('api client', () => {
     await expect(submitGateConfirmation('token', 'sig')).rejects.toMatchObject({ code: 'CHALLENGE_EXPIRED' });
   });
 
-  it('supports bot client management endpoints', async () => {
+  it('uses repo github app status endpoint', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    fetchSpy.mockResolvedValueOnce(mockJsonResponse(200, [{ id: 'bc_1', name: 'acme-prod-bot' }]));
-    fetchSpy.mockResolvedValueOnce(mockJsonResponse(200, { id: 'bc_2', name: 'new-bot' }));
     fetchSpy.mockResolvedValueOnce(
-      mockJsonResponse(200, { key_id: 'bck_1', secret: 'secret_once', created_at: '2026-01-01T00:00:00Z' })
+      mockJsonResponse(200, {
+        installed: true,
+        installation_id: 123,
+        installation_account_login: 'owner',
+        installation_account_type: 'User',
+        repo_connected: true
+      })
     );
-    fetchSpy.mockResolvedValueOnce({ ok: true, status: 204 } as Response);
-    fetchSpy.mockResolvedValueOnce({ ok: true, status: 204 } as Response);
 
-    const clients = await listBotClients();
-    expect(clients?.[0].id).toBe('bc_1');
-    await createBotClient('new-bot');
-    await createBotClientKey('bc_2');
-    await revokeBotClientKey('bc_2', 'bck_1');
-    await setBotInstallationBindings('bc_2', [100, 101]);
-
-    expect(fetchSpy).toHaveBeenCalledTimes(5);
+    const status = await getInstallStatus('999');
+    expect(status?.installation_id).toBe(123);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0]).toContain('/api/v1/repos/999/github-app-status');
   });
 });

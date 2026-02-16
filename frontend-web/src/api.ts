@@ -1,11 +1,8 @@
 import type {
   ApiError,
   ApiErrorBody,
-  BotClient,
   ConfirmResponse,
   ConfirmTypedDataResponse,
-  CreateBotClientResponse,
-  CreateBotKeyResponse,
   GateResponse,
   InstallStatusResponse,
   MeResponse,
@@ -143,44 +140,7 @@ export function getOwnedRepos(): Promise<RepoOption[] | null> {
 }
 
 export function getInstallStatus(repoId: string): Promise<InstallStatusResponse | null> {
-  return requestOptional<InstallStatusResponse>(`/api/v1/github/installations/status?repo_id=${encodeURIComponent(repoId)}`);
-}
-
-export function listBotClients(): Promise<BotClient[] | null> {
-  return requestOptional<BotClient[]>('/api/v1/bot-clients');
-}
-
-export function createBotClient(name: string): Promise<CreateBotClientResponse> {
-  return request<CreateBotClientResponse>('/api/v1/bot-clients', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ name })
-  });
-}
-
-export function createBotClientKey(botClientId: string): Promise<CreateBotKeyResponse> {
-  return request<CreateBotKeyResponse>(`/api/v1/bot-clients/${encodeURIComponent(botClientId)}/keys`, {
-    method: 'POST',
-    headers: JSON_HEADERS
-  });
-}
-
-export function revokeBotClientKey(botClientId: string, keyId: string): Promise<void> {
-  return request<void>(
-    `/api/v1/bot-clients/${encodeURIComponent(botClientId)}/keys/${encodeURIComponent(keyId)}/revoke`,
-    {
-      method: 'POST',
-      headers: JSON_HEADERS
-    }
-  );
-}
-
-export function setBotInstallationBindings(botClientId: string, installationIds: number[]): Promise<void> {
-  return request<void>(`/api/v1/bot-clients/${encodeURIComponent(botClientId)}/installation-bindings`, {
-    method: 'PUT',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ installation_ids: installationIds })
-  });
+  return requestOptional<InstallStatusResponse>(`/api/v1/repos/${encodeURIComponent(repoId)}/github-app-status`);
 }
 
 export function resolveWhitelistLogins(repoId: string, logins: string[]): Promise<ResolveLoginsResponse> {
