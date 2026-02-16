@@ -36,7 +36,7 @@ body {
 #app {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 0 24px 60px;
+  padding: 0 24px 24px;
 }
 
 /* ── Topbar ── */
@@ -61,6 +61,11 @@ body {
   gap: 12px;
   align-items: center;
   margin-left: auto;
+}
+
+.topbar-signout {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 .brand {
@@ -829,11 +834,21 @@ button.toast-close:hover:not(:disabled) {
 
 /* ── Owner sidebar ── */
 
+.owner-layout {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: calc(100dvh - 24px);
+}
+
+.owner-layout-content {
+  min-height: 0;
+}
+
 .owner-shell {
   display: grid;
   grid-template-columns: 240px 1fr;
   gap: 24px;
-  height: calc(100vh - 100px);
+  height: 100%;
   overflow: hidden;
 }
 
@@ -886,12 +901,6 @@ button.toast-close:hover:not(:disabled) {
   border-left: 2px solid var(--accent);
 }
 
-.owner-sidebar-bottom {
-  margin-top: auto;
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
-}
-
 /* ── Owner tabs ── */
 
 .owner-tabs {
@@ -940,7 +949,7 @@ button.toast-close:hover:not(:disabled) {
 
   .owner-shell {
     grid-template-columns: 1fr;
-    height: auto;
+    height: 100%;
     overflow: visible;
   }
 

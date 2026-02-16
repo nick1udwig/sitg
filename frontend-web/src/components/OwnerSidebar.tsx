@@ -8,7 +8,6 @@ interface OwnerSidebarProps {
   selectedRepo: RepoSelection | null;
   onSelectRepo: (repo: RepoSelection) => void;
   onResolveRepoByFullName: (fullName: string) => Promise<RepoSelection | null>;
-  onLogout: () => void;
   isBusy: (key: string) => boolean;
 }
 
@@ -18,7 +17,6 @@ export function OwnerSidebar({
   selectedRepo,
   onSelectRepo,
   onResolveRepoByFullName,
-  onLogout,
   isBusy
 }: OwnerSidebarProps) {
   const [showAdd, setShowAdd] = useState(false);
@@ -156,12 +154,6 @@ export function OwnerSidebar({
           </li>
         )}
       </ul>
-
-      <div className="owner-sidebar-bottom">
-        <button className="ghost" style={{ width: '100%' }} disabled={isBusy('logout')} onClick={onLogout}>
-          {isBusy('logout') ? 'Signing out...' : 'Sign out'}
-        </button>
-      </div>
     </aside>
   );
 }

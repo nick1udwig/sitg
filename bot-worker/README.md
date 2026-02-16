@@ -37,6 +37,7 @@ Canonical interface contract: `docs/14-centralized-bot-interfaces.md`
 ## Setup
 
 1. Set environment variables:
+   - Start from `bot-worker/.env.example`.
    - `GITHUB_WEBHOOK_SECRET`
    - `GITHUB_APP_ID`
    - `GITHUB_APP_PRIVATE_KEY`

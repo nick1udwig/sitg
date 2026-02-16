@@ -25,6 +25,18 @@ Set these on every worker replica:
 - `BACKEND_BOT_KEY_ID`
 - `BACKEND_INTERNAL_HMAC_SECRET`
 
+How to get each required value:
+
+| Variable | Where it comes from | How to obtain it |
+| --- | --- | --- |
+| `PORT` | Host/runtime config | Choose an unused port per replica (`3101`, `3102`, etc). |
+| `GITHUB_WEBHOOK_SECRET` | GitHub App settings | GitHub -> Settings -> Developer settings -> GitHub Apps -> your app -> Webhook -> Secret. Use this exact value in worker env. |
+| `GITHUB_APP_ID` | GitHub App settings | GitHub -> Settings -> Developer settings -> GitHub Apps -> your app -> App ID. |
+| `GITHUB_APP_PRIVATE_KEY` | GitHub App private key | GitHub -> Settings -> Developer settings -> GitHub Apps -> your app -> Private keys -> Generate a private key. Store PEM securely. |
+| `BACKEND_BASE_URL` | SITG infra/backend deployment | Use the externally reachable backend URL that serves `internal/v2` routes (example: `https://sitg.io`). |
+| `BACKEND_BOT_KEY_ID` | backend-api internal auth | Create/provision a service bot key in backend-api and copy the returned key id. |
+| `BACKEND_INTERNAL_HMAC_SECRET` | backend-api internal auth | Copy the secret paired with `BACKEND_BOT_KEY_ID` at key creation/rotation time. |
+
 Optional:
 
 - `BACKEND_SERVICE_TOKEN`
@@ -33,6 +45,23 @@ Optional:
 - `OUTBOX_POLLING_ENABLED` (default `true`)
 - `OUTBOX_POLL_INTERVAL_MS` (default `5000`)
 - `OUTBOX_CLAIM_LIMIT` (default `25`)
+
+Reference env template:
+- `bot-worker/.env.example`
+- `deploy/env/bot-worker.env.example`
+
+Provisioning helper:
+- `deploy/scripts/provision-service-bot-key.sh`
+- Generates/rotates `service_bot_keys` row and prints:
+  - `BACKEND_BOT_KEY_ID`
+  - `BACKEND_INTERNAL_HMAC_SECRET`
+  - `BACKEND_SERVICE_TOKEN` placeholder
+
+Example:
+
+```bash
+DATABASE_URL='postgres://sitg:***@127.0.0.1:5432/sitg' ./deploy/scripts/provision-service-bot-key.sh
+```
 
 ## 3. Build And Release
 

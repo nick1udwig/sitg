@@ -5,7 +5,6 @@ import {
   getOwnedRepos,
   getRepoConfig,
   githubSignIn,
-  logout,
   putRepoConfig,
   putWhitelist,
   resolveWhitelistLogins
@@ -188,11 +187,6 @@ export function OwnerPage() {
     pushNotice('success', `Saved ${resolved.resolved.length} whitelist entries. Unresolved: ${resolved.unresolved.join(', ') || 'none'}.`);
   };
 
-  const handleLogout = async (): Promise<void> => {
-    const ok = await runBusy('logout', async () => { await logout(); return true; });
-    if (ok) window.location.href = '/';
-  };
-
   const handleResolveRepoByFullName = async (fullName: string): Promise<{ id: string; fullName: string } | null> => {
     const normalized = fullName.trim().toLowerCase();
     if (!normalized) {
@@ -260,7 +254,6 @@ export function OwnerPage() {
         selectedRepo={selectedRepo}
         onSelectRepo={setRepo}
         onResolveRepoByFullName={handleResolveRepoByFullName}
-        onLogout={handleLogout}
         isBusy={isBusy}
       />
       <main>

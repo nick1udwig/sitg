@@ -1,5 +1,5 @@
 [Unit]
-Description=SITG centralized bot-worker
+Description=SITG centralized bot-worker instance %i
 After=network.target
 Wants=network.target
 
@@ -8,7 +8,7 @@ Type=simple
 User=sitg
 Group=sitg
 WorkingDirectory=/opt/sitg/bot-worker
-EnvironmentFile=/etc/sitg/bot-worker.env
+EnvironmentFile=/etc/sitg/bot-worker-%i.env
 ExecStart=/usr/bin/node /opt/sitg/bot-worker/dist/src/index.js
 Restart=always
 RestartSec=2
