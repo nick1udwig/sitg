@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppStateProvider, useAppState } from '../state';
 
 const apiMocks = vi.hoisted(() => ({
@@ -49,6 +49,10 @@ function renderPage() {
 }
 
 describe('OwnerPage flow', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -148,7 +152,7 @@ describe('OwnerPage flow', () => {
     });
 
     await user.click(screen.getByRole('button', { name: 'Repo Info' }));
-    expect(screen.getByRole('link', { name: 'Install App' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Configure App' })).toBeTruthy();
   });
 
   it('allows adding a repo by full name when repo id is left empty', async () => {
@@ -197,5 +201,24 @@ describe('OwnerPage flow', () => {
         draft_prs_gated: true
       });
     });
+  });
+
+  it('disables Save Config when app is not installed and shows helper text', async () => {
+    const user = userEvent.setup();
+    apiMocks.getInstallStatus.mockResolvedValue({
+      installed: false,
+      installation_id: null,
+      installation_account_login: null,
+      installation_account_type: null,
+      repo_connected: false
+    });
+
+    renderPage();
+    await screen.findAllByRole('button', { name: 'owner/repo' });
+    await user.click(screen.getByRole('button', { name: 'Threshold & Whitelist' }));
+
+    const saveConfigButton = screen.getByRole('button', { name: 'Save Config' });
+    expect((saveConfigButton as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Install the GitHub App to unlock Threshold and Whitelist settings.')).toBeTruthy();
   });
 });

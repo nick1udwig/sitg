@@ -18,7 +18,7 @@ export function OwnerLayout() {
     <div className="owner-layout">
       <header className="topbar">
         <div className="topbar-left">
-          <div className="brand">sitg</div>
+          <div className="brand">Skin In The Game</div>
           <span className="nav-context">owner</span>
         </div>
         <div className="topbar-right">

@@ -10,7 +10,7 @@ export function ContributorLayout() {
     <>
       <header className="topbar">
         <div className="topbar-left">
-          <div className="brand">sitg</div>
+          <div className="brand">Skin In The Game</div>
           <span className="nav-context">contributor</span>
         </div>
         <div className="topbar-right">

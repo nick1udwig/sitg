@@ -167,6 +167,25 @@ pub struct WalletLinkConfirmResponse {
     pub linked: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct WalletLinkStatusResponse {
+    pub wallet_address: String,
+    pub chain_id: i32,
+    pub linked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StakeStatusQuery {
+    pub wallet: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StakeStatusResponse {
+    pub staked_balance_wei: String,
+    pub unlock_time: DateTime<Utc>,
+    pub lock_active: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct InternalPrEventRequest {
     pub delivery_id: String,

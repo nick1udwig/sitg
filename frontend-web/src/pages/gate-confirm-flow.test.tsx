@@ -7,9 +7,11 @@ import { AppStateProvider, useAppState } from '../state';
 
 const wagmiMocks = vi.hoisted(() => ({
   account: { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', chainId: 1 },
+  publicClient: { waitForTransactionReceipt: vi.fn() },
   signMessageAsync: vi.fn(),
   signTypedDataAsync: vi.fn(),
-  switchChainAsync: vi.fn()
+  switchChainAsync: vi.fn(),
+  writeContractAsync: vi.fn()
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -17,6 +19,7 @@ const apiMocks = vi.hoisted(() => ({
   getConfirmTypedData: vi.fn(),
   getGate: vi.fn(),
   getStakeStatus: vi.fn(),
+  getWalletLinkStatus: vi.fn(),
   githubSignIn: vi.fn(),
   requestWalletLinkChallenge: vi.fn(),
   submitGateConfirmation: vi.fn()
@@ -24,9 +27,11 @@ const apiMocks = vi.hoisted(() => ({
 
 vi.mock('wagmi', () => ({
   useAccount: () => wagmiMocks.account,
+  usePublicClient: () => wagmiMocks.publicClient,
   useSignMessage: () => ({ signMessageAsync: wagmiMocks.signMessageAsync }),
   useSignTypedData: () => ({ signTypedDataAsync: wagmiMocks.signTypedDataAsync }),
-  useSwitchChain: () => ({ switchChainAsync: wagmiMocks.switchChainAsync })
+  useSwitchChain: () => ({ switchChainAsync: wagmiMocks.switchChainAsync }),
+  useWriteContract: () => ({ writeContractAsync: wagmiMocks.writeContractAsync })
 }));
 
 vi.mock('../lib/wagmi', () => ({
@@ -112,6 +117,13 @@ describe('GatePage confirmation flow', () => {
       unlock_time: '2099-01-02T00:00:00Z',
       lock_active: true
     });
+    apiMocks.getWalletLinkStatus
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({
+        wallet_address: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8',
+        chain_id: 8453,
+        linked_at: '2099-01-01T00:00:00Z'
+      });
     apiMocks.requestWalletLinkChallenge.mockResolvedValue({
       nonce: 'nonce-1',
       expires_at: '2099-01-01T00:09:00Z',

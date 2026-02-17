@@ -231,7 +231,7 @@ export function OwnerPage() {
   if (!state.me) {
     return (
       <div className="auth-prompt">
-        <div className="landing-brand">sitg</div>
+        <div className="landing-brand">Skin In The Game</div>
         <p className="auth-prompt-desc">
           Sign in with GitHub to configure repositories, set stake thresholds, and connect the GitHub App.
         </p>

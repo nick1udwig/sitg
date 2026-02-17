@@ -89,7 +89,7 @@ export function ContributorPage() {
   if (!state.me) {
     return (
       <div className="auth-prompt">
-        <div className="landing-brand">sitg</div>
+        <div className="landing-brand">Skin In The Game</div>
         <p className="auth-prompt-desc">
           Link your wallet to your GitHub account. When a bot posts a gate link on your PR, click it to verify your stake.
         </p>

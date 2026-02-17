@@ -212,6 +212,90 @@ test("installation_repositories webhook forwards to backend v2", async () => {
   }
 });
 
+test("installation created backfills repositories from GitHub when payload has none", async () => {
+  const config = makeConfig();
+  const calls: FetchCall[] = [];
+
+  const restoreFetch = installFetchMock(async (url, init) => {
+    const method = (init.method ?? "GET").toUpperCase();
+    const headers = new Headers(init.headers);
+    const bodyText = init.body ? String(init.body) : undefined;
+    const body = bodyText ? (JSON.parse(bodyText) as unknown) : undefined;
+    calls.push({ url, method, headers, body });
+
+    if (url === "https://api.github.com/app/installations/555/access_tokens" && method === "POST") {
+      return new Response(JSON.stringify({ token: "ghs_test" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (url === "https://api.github.com/installation/repositories?per_page=100&page=1" && method === "GET") {
+      return new Response(
+        JSON.stringify({
+          total_count: 1,
+          repositories: [{ id: 999, full_name: "org/repo" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (url === "http://backend.local/internal/v2/github/events/installation-sync" && method === "POST") {
+      const payload = body as {
+        event_name: string;
+        action: string;
+        repositories: Array<{ id: number; full_name: string }>;
+      };
+      assert.equal(payload.event_name, "installation");
+      assert.equal(payload.action, "created");
+      assert.equal(payload.repositories.length, 1);
+      assert.equal(payload.repositories[0]?.full_name, "org/repo");
+      return new Response(
+        JSON.stringify({ ingest_status: "ACCEPTED", updated_installation_id: 555, updated_repositories: 1 }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${method} ${url}`);
+  });
+
+  const server = createAppServer(config);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const port = (server.address() as AddressInfo).port;
+
+  try {
+    const payload = {
+      action: "created",
+      installation: {
+        id: 555,
+        account: {
+          login: "org",
+          type: "Organization",
+        },
+      },
+      repositories: [],
+    };
+    const webhook = signedWebhook(payload, config.githubWebhookSecret);
+
+    const res = await fetch(`http://127.0.0.1:${port}/webhooks/github`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "installation",
+        "x-github-delivery": "00000000-0000-0000-0000-000000000999",
+        "x-hub-signature-256": webhook.signature,
+      },
+      body: webhook.body,
+    });
+
+    assert.equal(res.status, 200);
+    assert.ok(calls.some((c) => c.url === "https://api.github.com/installation/repositories?per_page=100&page=1"));
+  } finally {
+    server.close();
+    restoreFetch();
+  }
+});
+
 test("outbox polling executes UPSERT_PR_COMMENT and acks SUCCEEDED", async () => {
   const config: AppConfig = {
     ...makeConfig(),
@@ -454,6 +538,195 @@ test("outbox polling sends RETRYABLE_FAILURE for GitHub execution errors", async
     await waitFor(
       () => calls.some((c) => c.url === "http://backend.local/internal/v2/bot-actions/dddddddd-dddd-dddd-dddd-dddddddddddd/result"),
       2000,
+    );
+  } finally {
+    server.close();
+    restoreFetch();
+  }
+});
+
+test("outbox polling recovers stale installation id for CLOSE_PR_WITH_COMMENT", async () => {
+  const config: AppConfig = {
+    ...makeConfig(),
+    outboxPollingEnabled: true,
+    outboxPollIntervalMs: 250,
+  };
+  const calls: FetchCall[] = [];
+
+  let claimedOnce = false;
+  const restoreFetch = installFetchMock(async (url, init) => {
+    const method = (init.method ?? "GET").toUpperCase();
+    const bodyText = init.body ? String(init.body) : undefined;
+    const body = bodyText ? (JSON.parse(bodyText) as unknown) : undefined;
+    calls.push({ url, method, headers: new Headers(init.headers), body });
+
+    if (url === "http://backend.local/internal/v2/bot-actions/claim") {
+      if (!claimedOnce) {
+        claimedOnce = true;
+        return new Response(
+          JSON.stringify({
+            actions: [
+              {
+                id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                action_type: "CLOSE_PR_WITH_COMMENT",
+                installation_id: 123,
+                github_repo_id: 999,
+                repo_full_name: "org/repo",
+                github_pr_number: 42,
+                challenge_id: "11111111-2222-3333-4444-555555555555",
+                payload: {
+                  comment_markdown: "timeout",
+                  comment_marker: "sitg:timeout:eeeeeeee",
+                },
+                attempts: 0,
+                created_at: new Date().toISOString(),
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ actions: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (url === "https://api.github.com/app/installations/123/access_tokens") {
+      return new Response(JSON.stringify({ message: "not found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://api.github.com/repos/org/repo/installation") {
+      return new Response(JSON.stringify({ id: 777 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://api.github.com/app/installations/777/access_tokens") {
+      return new Response(JSON.stringify({ token: "ghs_test" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://api.github.com/repos/org/repo/pulls/42" && method === "PATCH") {
+      return new Response(JSON.stringify({ number: 42, state: "closed" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://api.github.com/repos/org/repo/issues/42/comments?per_page=100") {
+      return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url === "https://api.github.com/repos/org/repo/issues/42/comments" && method === "POST") {
+      return new Response(JSON.stringify({ id: 1 }), { status: 201, headers: { "content-type": "application/json" } });
+    }
+    if (url === "http://backend.local/internal/v2/bot-actions/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee/result") {
+      const typedBody = body as { outcome: string };
+      assert.equal(typedBody.outcome, "SUCCEEDED");
+      return new Response(JSON.stringify({ id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", status: "DONE" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${method} ${url}`);
+  });
+
+  const server = createAppServer(config);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+
+  try {
+    await waitFor(
+      () => calls.some((c) => c.url === "http://backend.local/internal/v2/bot-actions/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee/result"),
+      5000,
+    );
+  } finally {
+    server.close();
+    restoreFetch();
+  }
+});
+
+test("outbox polling sends FAILED when installation cannot be resolved", async () => {
+  const config: AppConfig = {
+    ...makeConfig(),
+    outboxPollingEnabled: true,
+    outboxPollIntervalMs: 250,
+  };
+  const calls: FetchCall[] = [];
+
+  let claimedOnce = false;
+  const restoreFetch = installFetchMock(async (url, init) => {
+    const method = (init.method ?? "GET").toUpperCase();
+    const bodyText = init.body ? String(init.body) : undefined;
+    const body = bodyText ? (JSON.parse(bodyText) as unknown) : undefined;
+    calls.push({ url, method, headers: new Headers(init.headers), body });
+
+    if (url === "http://backend.local/internal/v2/bot-actions/claim") {
+      if (!claimedOnce) {
+        claimedOnce = true;
+        return new Response(
+          JSON.stringify({
+            actions: [
+              {
+                id: "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                action_type: "UPSERT_PR_COMMENT",
+                installation_id: 123,
+                github_repo_id: 999,
+                repo_full_name: "org/repo",
+                github_pr_number: 42,
+                challenge_id: null,
+                payload: {
+                  comment_markdown: "hello",
+                  comment_marker: "sitg:gate:ffffffff",
+                },
+                attempts: 0,
+                created_at: new Date().toISOString(),
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ actions: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (url === "https://api.github.com/app/installations/123/access_tokens") {
+      return new Response(JSON.stringify({ message: "not found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://api.github.com/repos/org/repo/installation") {
+      return new Response(JSON.stringify({ message: "not found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "http://backend.local/internal/v2/bot-actions/ffffffff-ffff-ffff-ffff-ffffffffffff/result") {
+      const typedBody = body as { outcome: string; failure_code: string };
+      assert.equal(typedBody.outcome, "FAILED");
+      assert.equal(typedBody.failure_code, "INSTALLATION_NOT_FOUND");
+      return new Response(JSON.stringify({ id: "ffffffff-ffff-ffff-ffff-ffffffffffff", status: "FAILED" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${method} ${url}`);
+  });
+
+  const server = createAppServer(config);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+
+  try {
+    await waitFor(
+      () => calls.some((c) => c.url === "http://backend.local/internal/v2/bot-actions/ffffffff-ffff-ffff-ffff-ffffffffffff/result"),
+      5000,
     );
   } finally {
     server.close();

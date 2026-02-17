@@ -27,9 +27,11 @@ use crate::{
             InternalInstallationSyncRequest, InternalInstallationSyncResponse,
             InternalPrEventRequest, InternalPrEventResponse, MeResponse, RepoConfigPutRequest,
             RepoConfigResponse, RepoGithubAppStatusResponse, RepoOptionResponse,
-            ResolveLoginsRequest, ResolveLoginsResponse, ResolvedLogin, ThresholdResponse,
+            ResolveLoginsRequest, ResolveLoginsResponse, ResolvedLogin, StakeStatusQuery,
+            StakeStatusResponse, ThresholdResponse,
             TypedDataDomain, TypedDataMessage, WalletLinkChallengeResponse,
-            WalletLinkConfirmRequest, WalletLinkConfirmResponse, WhitelistPutRequest,
+            WalletLinkConfirmRequest, WalletLinkConfirmResponse, WalletLinkStatusResponse,
+            WhitelistPutRequest,
         },
         db::{BotActionRow, ChallengeRow, CurrentUserRow, RepoConfigRow, WalletLinkChallengeRow},
     },
@@ -73,7 +75,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/gate/{gate_token}/confirm", post(post_gate_confirm))
         .route("/api/v1/wallet/link/challenge", post(wallet_link_challenge))
         .route("/api/v1/wallet/link/confirm", post(wallet_link_confirm))
-        .route("/api/v1/wallet/link", delete(wallet_unlink))
+        .route("/api/v1/wallet/link", get(wallet_link_status).delete(wallet_unlink))
+        .route("/api/v1/stake/status", get(get_stake_status))
         .route(
             "/internal/v2/github/events/pull-request",
             post(internal_v2_pr_events),
@@ -896,6 +899,54 @@ async fn post_gate_confirm(
     )
     .await?;
 
+    match sqlx::query_scalar::<_, i64>(
+        "select installation_id from repo_configs where github_repo_id = $1",
+    )
+    .bind(challenge.github_repo_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(Some(installation_id)) => {
+            let comment_marker = format!("sitg:verified:{}", challenge.id);
+            if let Err(err) = queue_pr_comment_action(
+                &state,
+                Some(challenge.id),
+                installation_id,
+                challenge.github_repo_id,
+                &challenge.github_repo_full_name,
+                challenge.github_pr_number,
+                "Stake verification complete. This PR is verified.",
+                &comment_marker,
+                "CHALLENGE_VERIFIED",
+            )
+            .await
+            {
+                tracing::error!(
+                    error = %err,
+                    challenge_id = %challenge.id,
+                    github_repo_id = challenge.github_repo_id,
+                    github_pr_number = challenge.github_pr_number,
+                    "failed to enqueue verified PR comment action"
+                );
+            }
+        }
+        Ok(None) => {
+            tracing::warn!(
+                challenge_id = %challenge.id,
+                github_repo_id = challenge.github_repo_id,
+                "repo config missing installation_id; skipped verified PR comment action"
+            );
+        }
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                challenge_id = %challenge.id,
+                github_repo_id = challenge.github_repo_id,
+                "failed to load repo installation for verified PR comment action"
+            );
+        }
+    }
+
     Ok(Json(ConfirmResponse {
         status: "VERIFIED".to_string(),
     }))
@@ -1013,6 +1064,27 @@ async fn wallet_link_confirm(
     }))
 }
 
+async fn wallet_link_status(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> ApiResult<Json<WalletLinkStatusResponse>> {
+    let user = require_current_user(&state, &jar).await?;
+
+    let row: Option<(String, i32, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "select wallet_address, chain_id, linked_at from wallet_links where user_id = $1 and unlinked_at is null order by linked_at desc limit 1",
+    )
+    .bind(user.id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let (wallet_address, chain_id, linked_at) = row.ok_or(ApiError::NotFound)?;
+    Ok(Json(WalletLinkStatusResponse {
+        wallet_address,
+        chain_id,
+        linked_at,
+    }))
+}
+
 async fn wallet_unlink(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
@@ -1053,6 +1125,27 @@ async fn wallet_unlink(
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_stake_status(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<StakeStatusQuery>,
+) -> ApiResult<Json<StakeStatusResponse>> {
+    let wallet_address = normalize_wallet_address(&query.wallet)?;
+    let stake_status = state.stake_service.stake_status(&wallet_address).await?;
+
+    let unlock_time =
+        chrono::DateTime::from_timestamp(stake_status.unlock_time_unix as i64, 0).ok_or_else(
+            || ApiError::validation("invalid unlock time"),
+        )?;
+    let lock_active =
+        stake_status.balance_wei > 0 && stake_status.unlock_time_unix > Utc::now().timestamp() as u64;
+
+    Ok(Json(StakeStatusResponse {
+        staked_balance_wei: stake_status.balance_wei.to_string(),
+        unlock_time,
+        lock_active,
+    }))
 }
 
 async fn internal_v2_pr_events(

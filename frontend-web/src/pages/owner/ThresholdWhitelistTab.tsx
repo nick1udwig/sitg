@@ -43,54 +43,68 @@ export function ThresholdWhitelistTab({
   isAuthed,
   loadingConfig
 }: ThresholdWhitelistTabProps) {
+  const appInstalled = installStatus === 'installed';
+  const saveConfigDisabled = isBusy('save-config') || !selectedRepo || !isAuthed || !appInstalled;
+  const saveWhitelistDisabled = isBusy('save-whitelist') || !selectedRepo || !isAuthed || !appInstalled;
+  const cardsLocked = !appInstalled;
+
   return (
     <div className="grid two">
-      <article className="card">
+      {cardsLocked ? (
+        <div className="install-required-banner" role="status" aria-live="polite">
+          <span className="status-dot amber" />
+          Install the GitHub App to unlock Threshold and Whitelist settings.
+        </div>
+      ) : null}
+
+      <article className={`card${cardsLocked ? ' app-locked' : ''}`}>
         <h2>Threshold Configuration</h2>
         <p className="meta">Set the ETH stake required from contributors. Whitelisted users bypass the gate.</p>
 
         {loadingConfig ? <p className="skeleton" aria-label="Loading repo config" /> : null}
 
         <form onSubmit={onSaveConfig}>
-          <div className="form-row">
-            <label>
-              Input mode
-              <select
-                value={configForm.inputMode}
-                onChange={(event) => onConfigFormChange((prev) => ({ ...prev, inputMode: event.target.value as InputMode }))}
-              >
-                <option value="ETH">ETH</option>
-                <option value="USD">USD</option>
-              </select>
-            </label>
-            <label>
-              Value
-              <input
-                required
-                value={configForm.inputValue}
-                onChange={(event) => onConfigFormChange((prev) => ({ ...prev, inputValue: event.target.value }))}
-              />
-            </label>
-            <label>
-              Draft gated
-              <select
-                value={String(configForm.draftPrsGated)}
-                onChange={(event) =>
-                  onConfigFormChange((prev) => ({ ...prev, draftPrsGated: event.target.value === 'true' }))
-                }
-              >
-                <option value="true">On</option>
-                <option value="false">Off</option>
-              </select>
-            </label>
-          </div>
-          <button type="submit" disabled={isBusy('save-config') || !selectedRepo || !isAuthed}>
-            {isBusy('save-config') ? 'Saving...' : 'Save Config'}
-          </button>
+          <fieldset className="form-lockset" disabled={cardsLocked}>
+            <div className="form-row">
+              <label>
+                Input mode
+                <select
+                  value={configForm.inputMode}
+                  onChange={(event) => onConfigFormChange((prev) => ({ ...prev, inputMode: event.target.value as InputMode }))}
+                >
+                  <option value="ETH">ETH</option>
+                  <option value="USD">USD</option>
+                </select>
+              </label>
+              <label>
+                Value
+                <input
+                  required
+                  value={configForm.inputValue}
+                  onChange={(event) => onConfigFormChange((prev) => ({ ...prev, inputValue: event.target.value }))}
+                />
+              </label>
+              <label>
+                Draft gated
+                <select
+                  value={String(configForm.draftPrsGated)}
+                  onChange={(event) =>
+                    onConfigFormChange((prev) => ({ ...prev, draftPrsGated: event.target.value === 'true' }))
+                  }
+                >
+                  <option value="true">On</option>
+                  <option value="false">Off</option>
+                </select>
+              </label>
+            </div>
+            <button type="submit" disabled={saveConfigDisabled}>
+              {isBusy('save-config') ? 'Saving...' : 'Save Config'}
+            </button>
+          </fieldset>
         </form>
       </article>
 
-      <article className="card">
+      <article className={`card${cardsLocked ? ' app-locked' : ''}`}>
         <h3>Summary &amp; Whitelist</h3>
 
         <div className="info-bar">
@@ -115,17 +129,19 @@ export function ThresholdWhitelistTab({
 
         <div className="section-label">Whitelist</div>
         <form onSubmit={onSaveWhitelist}>
-          <label>
-            GitHub logins (comma separated)
-            <textarea
-              value={whitelistInput}
-              onChange={(event) => onWhitelistInputChange(event.target.value)}
-              placeholder="alice, bob"
-            />
-          </label>
-          <button type="submit" disabled={isBusy('save-whitelist') || !selectedRepo || !isAuthed}>
-            {isBusy('save-whitelist') ? 'Saving...' : 'Resolve + Save Whitelist'}
-          </button>
+          <fieldset className="form-lockset" disabled={cardsLocked}>
+            <label>
+              GitHub logins (comma separated)
+              <textarea
+                value={whitelistInput}
+                onChange={(event) => onWhitelistInputChange(event.target.value)}
+                placeholder="alice, bob"
+              />
+            </label>
+            <button type="submit" disabled={saveWhitelistDisabled}>
+              {isBusy('save-whitelist') ? 'Saving...' : 'Resolve + Save Whitelist'}
+            </button>
+          </fieldset>
         </form>
       </article>
     </div>

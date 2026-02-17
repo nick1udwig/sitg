@@ -17,6 +17,16 @@ type CommentRecord = {
   body: string;
 };
 
+type InstallationRepositoriesResponse = {
+  repositories?: Array<{ id?: number; full_name?: string }>;
+  total_count?: number;
+};
+
+type InstallationRepositoryRef = {
+  id: number;
+  full_name: string;
+};
+
 const parseRepo = (fullName: string): RepoRef => {
   const [owner, repo] = fullName.split("/", 2);
   if (!owner || !repo) {
@@ -55,7 +65,7 @@ export class GitHubClient {
   }
 
   async closePullRequest(installationId: number, repoFullName: string, prNumber: number): Promise<void> {
-    const token = await this.getInstallationToken(installationId);
+    const token = await this.getInstallationToken(installationId, repoFullName);
     const { owner, repo } = parseRepo(repoFullName);
     const res = await fetchWithRetry(`${this.apiBaseUrl}/repos/${owner}/${repo}/pulls/${prNumber}`, {
       method: "PATCH",
@@ -67,6 +77,40 @@ export class GitHubClient {
     }
   }
 
+  async listInstallationRepositories(installationId: number): Promise<InstallationRepositoryRef[]> {
+    const token = await this.getInstallationToken(installationId);
+    const repositories: InstallationRepositoryRef[] = [];
+    let page = 1;
+
+    while (page <= 10) {
+      const res = await fetchWithRetry(
+        `${this.apiBaseUrl}/installation/repositories?per_page=100&page=${page}`,
+        {
+          method: "GET",
+          headers: this.defaultHeaders(token),
+        },
+      );
+      if (!res.ok) {
+        throw new Error(`GitHub list installation repositories failed (${res.status})`);
+      }
+
+      const body = (await res.json()) as InstallationRepositoriesResponse;
+      const chunk = body.repositories ?? [];
+      for (const repo of chunk) {
+        if (typeof repo.id === "number" && typeof repo.full_name === "string") {
+          repositories.push({ id: repo.id, full_name: repo.full_name });
+        }
+      }
+
+      if (chunk.length < 100) {
+        break;
+      }
+      page += 1;
+    }
+
+    return repositories;
+  }
+
   private async upsertIssueComment(
     installationId: number,
     repoFullName: string,
@@ -74,7 +118,7 @@ export class GitHubClient {
     marker: string,
     markdown: string,
   ): Promise<void> {
-    const token = await this.getInstallationToken(installationId);
+    const token = await this.getInstallationToken(installationId, repoFullName);
     const { owner, repo } = parseRepo(repoFullName);
     const body = `${markdown.trim()}\n\n${marker}`;
 
@@ -122,16 +166,49 @@ export class GitHubClient {
     return comments.find((comment) => comment.body?.includes(marker)) ?? null;
   }
 
-  private async getInstallationToken(installationId: number): Promise<string> {
-    const jwt = signGitHubAppJwt(this.appId, this.privateKeyPem);
-    const res = await fetchWithRetry(`${this.apiBaseUrl}/app/installations/${installationId}/access_tokens`, {
-      method: "POST",
+  private async resolveInstallationIdForRepo(jwt: string, repoFullName: string): Promise<number | null> {
+    const { owner, repo } = parseRepo(repoFullName);
+    const res = await fetchWithRetry(`${this.apiBaseUrl}/repos/${owner}/${repo}/installation`, {
+      method: "GET",
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${jwt}`,
         "x-github-api-version": "2022-11-28",
       },
     });
+    if (res.status === 404) {
+      return null;
+    }
+    if (!res.ok) {
+      throw new Error(`GitHub repository installation lookup failed (${res.status})`);
+    }
+    const body = (await res.json()) as { id?: number };
+    if (typeof body.id !== "number" || body.id <= 0) {
+      throw new Error("GitHub repository installation lookup response missing id");
+    }
+    return body.id;
+  }
+
+  private async getInstallationToken(installationId: number, repoFullName?: string): Promise<string> {
+    const jwt = signGitHubAppJwt(this.appId, this.privateKeyPem);
+    const requestToken = (targetInstallationId: number): Promise<Response> =>
+      fetchWithRetry(`${this.apiBaseUrl}/app/installations/${targetInstallationId}/access_tokens`, {
+        method: "POST",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${jwt}`,
+          "x-github-api-version": "2022-11-28",
+        },
+      });
+
+    let res = await requestToken(installationId);
+    if (!res.ok && res.status === 404 && repoFullName) {
+      const resolvedInstallationId = await this.resolveInstallationIdForRepo(jwt, repoFullName);
+      if (resolvedInstallationId && resolvedInstallationId !== installationId) {
+        res = await requestToken(resolvedInstallationId);
+      }
+    }
+
     if (!res.ok) {
       throw new Error(`GitHub installation token request failed (${res.status})`);
     }

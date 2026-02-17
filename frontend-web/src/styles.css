@@ -168,6 +168,20 @@ textarea,
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.install-required-banner {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.14), rgba(245, 158, 11, 0.04));
+  color: #fbbf24;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 /* ── Card ── */
 
 .card {
@@ -177,6 +191,21 @@ textarea,
   padding: 20px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   animation: fadeIn 200ms ease-out;
+}
+
+.card.app-locked {
+  position: relative;
+  opacity: 0.58;
+  filter: grayscale(0.7);
+}
+
+.card.app-locked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius);
+  background: rgba(11, 15, 25, 0.25);
+  pointer-events: none;
 }
 
 .card h2,
@@ -222,6 +251,13 @@ textarea,
 form {
   display: grid;
   gap: 12px;
+}
+
+.form-lockset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
 }
 
 label {
@@ -454,6 +490,38 @@ button:disabled {
 
 .info-bar strong {
   color: var(--ink);
+}
+
+.gate-explainer {
+  padding: 10px 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.gate-explainer-title {
+  margin: 0 0 6px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.gate-explainer-copy {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+.gate-explainer-copy + .gate-explainer-copy {
+  margin-top: 4px;
+}
+
+.gate-explainer a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.gate-explainer a:hover {
+  color: var(--accent-hover);
 }
 
 /* ── Error bar ── */

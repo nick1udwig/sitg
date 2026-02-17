@@ -15,6 +15,8 @@ const INSTALL_DOT: Record<string, string> = {
 };
 
 export function RepoInfoTab({ selectedRepo, installStatus, installDetails, installUrl }: RepoInfoTabProps) {
+  const ctaLabel = installStatus === 'installed' ? 'Configure App' : 'Install App';
+
   return (
     <article className="card">
       <h2>Repository Info</h2>
@@ -44,7 +46,7 @@ export function RepoInfoTab({ selectedRepo, installStatus, installDetails, insta
 
       <div className="row-wrap">
         <a className="button-like" href={installUrl || '#'} target="_blank" rel="noreferrer">
-          Install App
+          {ctaLabel}
         </a>
       </div>
     </article>

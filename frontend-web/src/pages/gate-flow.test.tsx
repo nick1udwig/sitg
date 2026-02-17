@@ -5,9 +5,11 @@ import { AppStateProvider } from '../state';
 
 vi.mock('wagmi', () => ({
   useAccount: () => ({ address: undefined, chainId: 8453 }),
+  usePublicClient: () => ({ waitForTransactionReceipt: vi.fn() }),
   useSignMessage: () => ({ signMessageAsync: vi.fn() }),
   useSignTypedData: () => ({ signTypedDataAsync: vi.fn() }),
-  useSwitchChain: () => ({ switchChainAsync: vi.fn() })
+  useSwitchChain: () => ({ switchChainAsync: vi.fn() }),
+  useWriteContract: () => ({ writeContractAsync: vi.fn() })
 }));
 
 vi.mock('../lib/wagmi', () => ({
@@ -30,6 +32,7 @@ vi.mock('../api', async () => {
       deadline_at: '2099-01-01T00:10:00Z',
       threshold_wei_snapshot: '1'
     }),
+    getWalletLinkStatus: vi.fn().mockResolvedValue(null),
     getStakeStatus: vi.fn().mockResolvedValue(null)
   };
 });
@@ -49,6 +52,6 @@ describe('GatePage flow', () => {
     );
 
     expect(await screen.findByText(/PR Stake Gate/)).toBeTruthy();
-    expect(screen.getByText('Sign in with GitHub')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sign in with GitHub' })).toBeTruthy();
   });
 });

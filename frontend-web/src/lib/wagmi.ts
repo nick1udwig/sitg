@@ -8,7 +8,7 @@ if (!projectId) {
 }
 
 export const wagmiConfig = getDefaultConfig({
-  appName: 'SITG',
+  appName: 'Skin In The Game',
   projectId: projectId ?? 'missing-project-id',
   chains: [base],
   ssr: false

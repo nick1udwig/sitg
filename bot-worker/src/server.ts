@@ -3,7 +3,7 @@ import { URL } from "node:url";
 import { BackendClient } from "./backend.js";
 import type { AppConfig } from "./config.js";
 import { GitHubClient } from "./github.js";
-import type { BotAction, BotActionOutcome } from "./types.js";
+import type { BotAction, BotActionOutcome, NormalizedInstallationSyncEvent } from "./types.js";
 import { parseGitHubWebhookEvent } from "./webhook.js";
 
 type AppContext = {
@@ -164,6 +164,13 @@ const classifyActionError = (error: unknown): BotActionExecutionError => {
   }
 
   const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.includes("GitHub installation token request failed (404)") ||
+    message.includes("GitHub repository installation lookup failed (404)") ||
+    message.includes("GitHub repository installation lookup response missing id")
+  ) {
+    return new BotActionExecutionError(message, "FAILED", "INSTALLATION_NOT_FOUND");
+  }
   return new BotActionExecutionError(message, "RETRYABLE_FAILURE", "EXECUTION_ERROR");
 };
 
@@ -224,6 +231,37 @@ const runOutboxPollTick = async (ctx: AppContext): Promise<void> => {
   }
 };
 
+const shouldBackfillInstallationRepos = (event: NormalizedInstallationSyncEvent): boolean => {
+  if (event.event_name !== "installation") {
+    return false;
+  }
+  if (event.action !== "created" && event.action !== "unsuspend") {
+    return false;
+  }
+  return event.repositories.length === 0;
+};
+
+const withInstallationRepositories = async (
+  ctx: AppContext,
+  event: NormalizedInstallationSyncEvent,
+): Promise<NormalizedInstallationSyncEvent> => {
+  if (!shouldBackfillInstallationRepos(event)) {
+    return event;
+  }
+
+  const repositories = await ctx.github.listInstallationRepositories(event.installation.id);
+  log("info", "webhook.installation_repo_backfill", {
+    delivery_id: event.delivery_id,
+    installation_id: event.installation.id,
+    repositories_found: repositories.length,
+  });
+
+  return {
+    ...event,
+    repositories,
+  };
+};
+
 const handleWebhook = async (ctx: AppContext, req: IncomingMessage, res: ServerResponse): Promise<void> => {
   const rawBody = await readBody(req);
   const event = parseGitHubWebhookEvent(req.headers, rawBody, ctx.config.githubWebhookSecret);
@@ -250,13 +288,15 @@ const handleWebhook = async (ctx: AppContext, req: IncomingMessage, res: ServerR
   }
 
   ctx.metrics.webhookInstallationSyncForwardedTotal += 1;
-  const response = await ctx.backend.postInstallationSyncEvent(event.payload);
+  const enriched = await withInstallationRepositories(ctx, event.payload);
+  const response = await ctx.backend.postInstallationSyncEvent(enriched);
   incrementIngestStatus(ctx.metrics, response.ingest_status);
   log("info", "webhook.installation_sync_forwarded", {
-    delivery_id: event.payload.delivery_id,
-    event_name: event.payload.event_name,
-    action: event.payload.action,
-    installation_id: event.payload.installation.id,
+    delivery_id: enriched.delivery_id,
+    event_name: enriched.event_name,
+    action: enriched.action,
+    installation_id: enriched.installation.id,
+    repositories: enriched.repositories.length,
     ingest_status: response.ingest_status,
   });
   json(res, 200, { status: "ok", ingest_status: response.ingest_status });

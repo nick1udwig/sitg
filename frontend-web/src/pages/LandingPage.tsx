@@ -3,8 +3,8 @@ import { Link } from 'react-router-dom';
 export function LandingPage() {
   return (
     <section className="landing">
-      <div className="landing-brand">sitg</div>
-      <p className="landing-subtitle">Skin in the Game</p>
+      <div className="landing-brand">Skin In The Game</div>
+      <p className="landing-subtitle">Skin In The Game</p>
       <p className="landing-desc">
         Gate pull requests with on-chain stake verification.
         Repository owners configure thresholds; contributors prove their stake to unlock merges.
