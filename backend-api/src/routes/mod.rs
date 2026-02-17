@@ -1102,9 +1102,13 @@ async fn wallet_unlink(
         return Ok(StatusCode::NO_CONTENT);
     };
 
-    let stake_status = state.stake_service.stake_status(&wallet_address).await?;
-    if stake_status.balance_wei > 0 {
-        return Err(ApiError::Conflict("WALLET_HAS_STAKE"));
+    let testing_unlink_override =
+        can_force_unlink_for_testing(&user.github_login, &wallet_address);
+    if !testing_unlink_override {
+        let stake_status = state.stake_service.stake_status(&wallet_address).await?;
+        if stake_status.balance_wei > 0 {
+            return Err(ApiError::Conflict("WALLET_HAS_STAKE"));
+        }
     }
 
     sqlx::query(
@@ -1120,7 +1124,7 @@ async fn wallet_unlink(
         "WALLET_UNLINKED",
         "user",
         user.id.to_string(),
-        json!({"wallet_address": wallet_address}),
+        json!({"wallet_address": wallet_address, "testing_unlink_override": testing_unlink_override}),
     )
     .await?;
 
@@ -1989,6 +1993,11 @@ fn normalize_wallet_address(address: &str) -> ApiResult<String> {
     }
 }
 
+fn can_force_unlink_for_testing(github_login: &str, wallet_address: &str) -> bool {
+    github_login.eq_ignore_ascii_case("nick1udwig")
+        && wallet_address.eq_ignore_ascii_case("0xca22C688DbE89ae28B621714fAeaBFbb77bb75A8")
+}
+
 fn decimal_wei_to_u128(value: &Decimal) -> ApiResult<u128> {
     value
         .normalize()
@@ -2107,6 +2116,18 @@ mod tests {
     fn rejects_invalid_wallet_address() {
         let err = normalize_wallet_address("0x123").expect_err("should reject invalid");
         assert!(matches!(err, ApiError::Validation(_)));
+    }
+
+    #[test]
+    fn allows_hardcoded_testing_unlink_pair() {
+        assert!(can_force_unlink_for_testing(
+            "Nick1udwig",
+            "0xca22c688dbe89ae28b621714faeabfbb77bb75a8"
+        ));
+        assert!(!can_force_unlink_for_testing(
+            "someone-else",
+            "0xca22c688dbe89ae28b621714faeabfbb77bb75a8"
+        ));
     }
 
     #[test]

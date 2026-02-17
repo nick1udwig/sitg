@@ -94,7 +94,7 @@ export function OwnerPage() {
         if (!mounted) return;
         if (isSessionExpiredError(error)) {
           setMe(null);
-          window.location.replace('/?session=expired');
+          pushNotice('info', 'Session expired, please sign in again.');
           return;
         }
         pushNotice('error', toUserMessage(error));

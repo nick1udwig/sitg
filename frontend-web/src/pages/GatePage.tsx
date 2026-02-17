@@ -76,6 +76,20 @@ function writeLinkedWalletCache(githubLogin: string, payload: WalletLinkStatusRe
   }
 }
 
+function clearLinkedWalletCache(githubLogin: string): void {
+  try {
+    const raw = localStorage.getItem(LINK_CACHE_KEY);
+    if (!raw) {
+      return;
+    }
+    const parsed = JSON.parse(raw) as Record<string, WalletLinkStatusResponse>;
+    delete parsed[githubLogin];
+    localStorage.setItem(LINK_CACHE_KEY, JSON.stringify(parsed));
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
 function parseWeiToBigInt(value: string): bigint | null {
   if (!/^\d+$/.test(value)) {
     return null;
@@ -153,7 +167,8 @@ export function GatePage() {
             setWalletLinkStatus(status);
             writeLinkedWalletCache(githubLogin, status);
           } else {
-            setWalletLinkStatus(readLinkedWalletCache(githubLogin));
+            setWalletLinkStatus(null);
+            clearLinkedWalletCache(githubLogin);
           }
         }
       })
@@ -169,6 +184,13 @@ export function GatePage() {
   }, [state.me]);
 
   const linkedWalletAddress = walletLinkStatus?.wallet_address ?? null;
+  const connectedWalletAddress = account.address?.toLowerCase() ?? null;
+  const linkedWalletAddressLower = linkedWalletAddress?.toLowerCase() ?? null;
+  const isConnectedWalletLinked = Boolean(
+    connectedWalletAddress
+    && linkedWalletAddressLower
+    && connectedWalletAddress === linkedWalletAddressLower
+  );
   const stakeWalletAddress = linkedWalletAddress ?? account.address ?? null;
 
   const readStakeStatusFromChain = async (walletAddress: `0x${string}`): Promise<StakeStatusResponse | null> => {
@@ -505,12 +527,13 @@ export function GatePage() {
   const hasGitHub = Boolean(state.me);
   const hasWallet = Boolean(account.address);
   const hasLinkedWallet = Boolean(linkedWalletAddress);
+  const canLinkWallet = hasWallet && (!hasLinkedWallet || !isConnectedWalletLinked);
   const thresholdEth = weiToEth(gate.threshold_wei_snapshot);
   const thresholdUsdEstimate = thresholdEth !== null && ethUsdSpot !== null ? formatUsd(thresholdEth * ethUsdSpot) : null;
   const thresholdWei = parseWeiToBigInt(gate.threshold_wei_snapshot);
   const stakedWei = parseWeiToBigInt(stakeStatus?.staked_balance_wei ?? '');
   const hasSufficientStake = Boolean(
-    hasLinkedWallet
+    isConnectedWalletLinked
     && thresholdWei !== null
     && stakedWei !== null
     && stakedWei >= thresholdWei
@@ -589,15 +612,15 @@ export function GatePage() {
             <span className={`step-label${hasWallet ? ' done' : ''}`}>Connect wallet</span>
           </div>
           <div className="step">
-            <span className={`step-indicator${hasLinkedWallet ? ' done' : ''}`}>{hasLinkedWallet ? '\u2713' : '3'}</span>
-            <span className={`step-label${hasLinkedWallet ? ' done' : ''}`}>Link wallet to GitHub</span>
+            <span className={`step-indicator${isConnectedWalletLinked ? ' done' : ''}`}>{isConnectedWalletLinked ? '\u2713' : '3'}</span>
+            <span className={`step-label${isConnectedWalletLinked ? ' done' : ''}`}>Link wallet to GitHub</span>
             <button
               className="ghost"
               style={{ marginLeft: 'auto', padding: '4px 10px' }}
-              disabled={Boolean(blockingMessage) || !hasWallet || hasLinkedWallet || isBusy('wallet-link') || isBusy('switch-chain')}
+              disabled={Boolean(blockingMessage) || !canLinkWallet || isBusy('wallet-link') || isBusy('switch-chain')}
               onClick={handleLinkWallet}
             >
-              {hasLinkedWallet ? 'Linked' : isBusy('wallet-link') ? 'Linking...' : 'Link'}
+              {isConnectedWalletLinked ? 'Linked' : isBusy('wallet-link') ? 'Linking...' : hasLinkedWallet ? 'Relink' : 'Link'}
             </button>
           </div>
           <div className="step">
@@ -609,7 +632,7 @@ export function GatePage() {
               disabled={
                 Boolean(blockingMessage)
                 || !hasWallet
-                || !hasLinkedWallet
+                || !isConnectedWalletLinked
                 || hasSufficientStake
                 || isBusy('stake-tx')
                 || isBusy('stake-receipt')
