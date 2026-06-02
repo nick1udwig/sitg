@@ -1,5 +1,7 @@
 # SITG
 
+Archived!
+
 Primary docs index:
 - `docs/README.md`
 
