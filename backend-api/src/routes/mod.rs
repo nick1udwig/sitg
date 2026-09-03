@@ -909,7 +909,7 @@ async fn post_gate_confirm(
         Ok(Some(installation_id)) => {
             let comment_marker = format!("sitg:verified:{}", challenge.id);
             if let Err(err) = queue_pr_comment_action(
-                &state,
+                &state.pool,
                 Some(challenge.id),
                 installation_id,
                 challenge.github_repo_id,
@@ -1163,11 +1163,13 @@ async fn internal_v2_pr_events(
 
     let message = format!("github-event:pull_request:{}", payload.delivery_id);
     let auth = verify_internal_from_headers(&state, &headers, &message).await?;
-    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
 
+    let mut tx = state.pool.begin().await?;
+    store_internal_replay(&mut *tx, &auth.signature_hex, auth.timestamp).await?;
     let is_new_delivery =
-        register_github_delivery(&state, &payload.delivery_id, "pull_request").await?;
+        register_github_delivery(&mut *tx, &payload.delivery_id, "pull_request").await?;
     if !is_new_delivery {
+        tx.commit().await?;
         return Ok(Json(InternalPrEventResponse {
             ingest_status: "DUPLICATE".to_string(),
             challenge_id: None,
@@ -1180,12 +1182,19 @@ async fn internal_v2_pr_events(
         "opened" | "reopened" | "ready_for_review" | "synchronize"
     );
     if !relevant_action {
+        tx.commit().await?;
         return Ok(Json(InternalPrEventResponse {
             ingest_status: "IGNORED".to_string(),
             challenge_id: None,
             enqueued_actions: 0,
         }));
     }
+
+    sqlx::query("select pg_advisory_xact_lock(hashtext($1), $2)")
+        .bind(payload.repository.id.to_string())
+        .bind(payload.pull_request.number)
+        .execute(&mut *tx)
+        .await?;
 
     let mapped_repo: Option<i64> = sqlx::query_scalar(
         r#"
@@ -1196,9 +1205,10 @@ async fn internal_v2_pr_events(
     )
     .bind(payload.installation_id)
     .bind(payload.repository.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
     if mapped_repo.is_none() {
+        tx.commit().await?;
         return Ok(Json(InternalPrEventResponse {
             ingest_status: "IGNORED".to_string(),
             challenge_id: None,
@@ -1215,10 +1225,11 @@ async fn internal_v2_pr_events(
         "#,
     )
     .bind(payload.repository.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     let Some(config) = config else {
+        tx.commit().await?;
         return Ok(Json(InternalPrEventResponse {
             ingest_status: "IGNORED".to_string(),
             challenge_id: None,
@@ -1227,6 +1238,7 @@ async fn internal_v2_pr_events(
     };
 
     if payload.pull_request.is_draft && !config.draft_prs_gated {
+        tx.commit().await?;
         return Ok(Json(InternalPrEventResponse {
             ingest_status: "IGNORED".to_string(),
             challenge_id: None,
@@ -1239,12 +1251,12 @@ async fn internal_v2_pr_events(
     )
     .bind(payload.repository.id)
     .bind(payload.pull_request.user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     if is_whitelisted.is_some() {
         let inserted = queue_pr_comment_action(
-            &state,
+            &mut *tx,
             None,
             payload.installation_id,
             payload.repository.id,
@@ -1258,6 +1270,7 @@ async fn internal_v2_pr_events(
             "WHITELIST_EXEMPT",
         )
         .await?;
+        tx.commit().await?;
         return Ok(Json(InternalPrEventResponse {
             ingest_status: "ACCEPTED".to_string(),
             challenge_id: None,
@@ -1278,7 +1291,7 @@ async fn internal_v2_pr_events(
     )
     .bind(payload.repository.id)
     .bind(payload.pull_request.number)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     let mut create_challenge = existing.is_none();
@@ -1305,7 +1318,7 @@ async fn internal_v2_pr_events(
                 )
                 .bind(existing.id)
                 .bind(now)
-                .execute(&state.pool)
+                .execute(&mut *tx)
                 .await?;
 
                 sqlx::query(
@@ -1318,7 +1331,7 @@ async fn internal_v2_pr_events(
                 )
                 .bind(existing.id)
                 .bind(now)
-                .execute(&state.pool)
+                .execute(&mut *tx)
                 .await?;
 
                 create_challenge = true;
@@ -1354,7 +1367,7 @@ async fn internal_v2_pr_events(
         .bind(payload.pull_request.is_draft)
         .bind(deadline_at)
         .bind(now)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
         let nonce = Uuid::new_v4();
@@ -1365,7 +1378,7 @@ async fn internal_v2_pr_events(
         .bind(challenge_id)
         .bind(deadline_at)
         .bind(now)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
         challenge = Some((challenge_id, gate_token));
@@ -1379,7 +1392,7 @@ async fn internal_v2_pr_events(
             gate_url
         );
         let inserted = queue_pr_comment_action(
-            &state,
+            &mut *tx,
             Some(*challenge_id),
             payload.installation_id,
             payload.repository.id,
@@ -1395,9 +1408,12 @@ async fn internal_v2_pr_events(
         }
     }
 
+    let challenge_id = challenge.map(|(id, _)| id);
+    tx.commit().await?;
+
     Ok(Json(InternalPrEventResponse {
         ingest_status: "ACCEPTED".to_string(),
-        challenge_id: challenge.map(|(id, _)| id),
+        challenge_id,
         enqueued_actions,
     }))
 }
@@ -1413,11 +1429,13 @@ async fn internal_v2_installation_sync(
 
     let message = format!("github-event:installation-sync:{}", payload.delivery_id);
     let auth = verify_internal_from_headers(&state, &headers, &message).await?;
-    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
 
+    let mut tx = state.pool.begin().await?;
+    store_internal_replay(&mut *tx, &auth.signature_hex, auth.timestamp).await?;
     let is_new_delivery =
-        register_github_delivery(&state, &payload.delivery_id, &payload.event_name).await?;
+        register_github_delivery(&mut *tx, &payload.delivery_id, &payload.event_name).await?;
     if !is_new_delivery {
+        tx.commit().await?;
         return Ok(Json(InternalInstallationSyncResponse {
             ingest_status: "DUPLICATE".to_string(),
             updated_installation_id: None,
@@ -1425,7 +1443,6 @@ async fn internal_v2_installation_sync(
         }));
     }
 
-    let mut tx = state.pool.begin().await?;
     let updated_installation_id: Option<i64>;
     let mut updated_repositories = 0i32;
 
@@ -1615,7 +1632,7 @@ async fn internal_v2_bot_actions_claim(
     }
     let nonce_message = format!("bot-actions-claim:{}", payload.worker_id);
     let auth = verify_internal_from_headers(&state, &headers, &nonce_message).await?;
-    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
+    store_internal_replay(&state.pool, &auth.signature_hex, auth.timestamp).await?;
 
     let limit = payload.limit.unwrap_or(25).clamp(1, 100);
     let mut tx = state.pool.begin().await?;
@@ -1683,7 +1700,7 @@ async fn internal_v2_bot_action_result(
 
     let nonce_message = format!("bot-action-result:{action_id}:{worker_id}:{outcome}");
     let auth = verify_internal_from_headers(&state, &headers, &nonce_message).await?;
-    store_internal_replay(&state, &auth.signature_hex, auth.timestamp).await?;
+    store_internal_replay(&state.pool, &auth.signature_hex, auth.timestamp).await?;
 
     let now = Utc::now();
     let status = if outcome == "SUCCEEDED" {
@@ -1769,8 +1786,8 @@ async fn internal_v2_bot_action_result(
     }))
 }
 
-async fn queue_pr_comment_action(
-    state: &AppState,
+async fn queue_pr_comment_action<'e, E>(
+    executor: E,
     challenge_id: Option<Uuid>,
     installation_id: i64,
     github_repo_id: i64,
@@ -1779,7 +1796,10 @@ async fn queue_pr_comment_action(
     comment_markdown: &str,
     comment_marker: &str,
     reason: &str,
-) -> ApiResult<bool> {
+) -> ApiResult<bool>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     let inserted = sqlx::query(
         r#"
         insert into bot_actions (
@@ -1801,16 +1821,19 @@ async fn queue_pr_comment_action(
       "reason": reason
     }))
     .bind(Utc::now())
-    .execute(&state.pool)
+    .execute(executor)
     .await?;
     Ok(inserted.rows_affected() > 0)
 }
 
-async fn register_github_delivery(
-    state: &AppState,
+async fn register_github_delivery<'e, E>(
+    executor: E,
     delivery_id: &str,
     event_name: &str,
-) -> ApiResult<bool> {
+) -> ApiResult<bool>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     let inserted = sqlx::query(
         r#"
         insert into github_event_deliveries (delivery_id, event_name, first_seen_at)
@@ -1821,7 +1844,7 @@ async fn register_github_delivery(
     .bind(delivery_id)
     .bind(event_name)
     .bind(Utc::now())
-    .execute(&state.pool)
+    .execute(executor)
     .await?;
     Ok(inserted.rows_affected() > 0)
 }
@@ -1894,11 +1917,14 @@ async fn verify_internal_from_headers(
     verify_internal_with_key_id(&state.pool, key_id, timestamp, signature_hex, message).await
 }
 
-async fn store_internal_replay(
-    state: &AppState,
+async fn store_internal_replay<'e, E>(
+    executor: E,
     signature_hex: &str,
     timestamp: i64,
-) -> ApiResult<()> {
+) -> ApiResult<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     let inserted = sqlx::query(
         r#"
         insert into internal_request_replays (id, signature, timestamp_unix, created_at)
@@ -1910,7 +1936,7 @@ async fn store_internal_replay(
     .bind(signature_hex)
     .bind(timestamp)
     .bind(Utc::now())
-    .execute(&state.pool)
+    .execute(executor)
     .await?;
 
     if inserted.rows_affected() == 0 {
