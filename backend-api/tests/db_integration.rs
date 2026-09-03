@@ -1,3 +1,4 @@
+use chrono::{Duration, Utc};
 use sqlx::{Executor, PgPool};
 use uuid::Uuid;
 
@@ -34,6 +35,9 @@ async fn apply_migrations(pool: &PgPool) {
     pool.execute(include_str!("../migrations/0007_centralized_bot_reset.sql"))
         .await
         .expect("apply 0007");
+    pool.execute(include_str!("../migrations/0008_bot_action_reliability.sql"))
+        .await
+        .expect("apply 0008");
 }
 
 #[tokio::test]
@@ -115,7 +119,6 @@ async fn bot_actions_pending_unique_for_challenge() {
     .execute(&pool)
     .await
     .expect("installation");
-
     let challenge_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -217,4 +220,110 @@ async fn bot_action_claim_and_result_v2_lifecycle() {
         .await
         .expect("get status");
     assert_eq!(status, "DONE");
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL postgres"]
+async fn bot_action_claim_reclaims_expired_leases_and_respects_backoff() {
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
+    apply_migrations(&pool).await;
+
+    let installation_id = 90_001_i64;
+    sqlx::query(
+        "insert into github_installations (installation_id, account_login, account_type, active, created_at, updated_at) values ($1, 'lease-org', 'Organization', true, now(), now()) on conflict (installation_id) do nothing",
+    )
+    .bind(installation_id)
+    .execute(&pool)
+    .await
+    .expect("installation");
+    sqlx::query("delete from bot_actions where installation_id = $1")
+        .bind(installation_id)
+        .execute(&pool)
+        .await
+        .expect("clear prior lease-test actions");
+
+    let stale_claim = Uuid::new_v4();
+    let fresh_claim = Uuid::new_v4();
+    let ready_pending = Uuid::new_v4();
+    let delayed_pending = Uuid::new_v4();
+    let now = Utc::now();
+
+    for (id, status, claimed_at, available_at) in [
+        (
+            stale_claim,
+            "CLAIMED",
+            Some(now - Duration::minutes(10)),
+            now,
+        ),
+        (fresh_claim, "CLAIMED", Some(now), now),
+        (
+            ready_pending,
+            "PENDING",
+            None,
+            now - Duration::minutes(1),
+        ),
+        (
+            delayed_pending,
+            "PENDING",
+            None,
+            now + Duration::hours(1),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            insert into bot_actions (
+              id, action_type, challenge_id, installation_id, github_repo_id, repo_full_name,
+              github_pr_number, payload, status, claimed_by, claimed_at, completed_at,
+              failure_reason, attempts, available_at, created_at, updated_at
+            )
+            values ($1, 'UPSERT_PR_COMMENT', null, $2, $2, 'lease-org/repo', 1, '{}'::jsonb,
+                    $3, $4, $5, null, null, 1, $6, $7, $7)
+            "#,
+        )
+        .bind(id)
+        .bind(installation_id)
+        .bind(status)
+        .bind(if status == "CLAIMED" {
+            Some("old-worker")
+        } else {
+            None
+        })
+        .bind(claimed_at)
+        .bind(available_at)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert action");
+    }
+
+    let claimed: Vec<Uuid> = sqlx::query_scalar(
+        r#"
+        update bot_actions a
+        set status = 'CLAIMED', claimed_at = $2, claimed_by = $3, attempts = attempts + 1, updated_at = $2
+        where a.id in (
+          select a2.id from bot_actions a2
+          where (a2.status = 'PENDING' and a2.available_at <= $2)
+             or (a2.status = 'CLAIMED' and (a2.claimed_at is null or a2.claimed_at <= $4))
+          order by case when a2.status = 'CLAIMED' then a2.claimed_at else a2.available_at end asc,
+                   a2.created_at asc
+          limit $1
+          for update skip locked
+        )
+        returning a.id
+        "#,
+    )
+    .bind(100_i64)
+    .bind(now)
+    .bind("new-worker")
+    .bind(now - Duration::minutes(5))
+    .fetch_all(&pool)
+    .await
+    .expect("claim actions");
+
+    assert!(claimed.contains(&stale_claim));
+    assert!(claimed.contains(&ready_pending));
+    assert!(!claimed.contains(&fresh_claim));
+    assert!(!claimed.contains(&delayed_pending));
 }

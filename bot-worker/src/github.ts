@@ -27,6 +27,36 @@ type InstallationRepositoryRef = {
   full_name: string;
 };
 
+export class GitHubApiError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(message: string, code: string, retryable: boolean) {
+    super(message);
+    this.name = "GitHubApiError";
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
+const githubHttpError = (operation: string, response: Response): GitHubApiError => {
+  const rateLimited =
+    response.status === 429 ||
+    (response.status === 403 &&
+      (response.headers.has("retry-after") || response.headers.get("x-ratelimit-remaining") === "0"));
+  const retryable =
+    rateLimited || response.status === 408 || response.status === 409 || response.status === 425 || response.status >= 500;
+  const installationMissing = response.status === 404 && operation.includes("installation");
+  return new GitHubApiError(
+    `GitHub ${operation} failed (${response.status})`,
+    installationMissing ? "INSTALLATION_NOT_FOUND" : `GITHUB_HTTP_${response.status}`,
+    retryable,
+  );
+};
+
+const githubProtocolError = (message: string, code = "INVALID_GITHUB_RESPONSE"): GitHubApiError =>
+  new GitHubApiError(message, code, false);
+
 const parseRepo = (fullName: string): RepoRef => {
   const [owner, repo] = fullName.split("/", 2);
   if (!owner || !repo) {
@@ -73,7 +103,7 @@ export class GitHubClient {
       body: JSON.stringify({ state: "closed" }),
     });
     if (!res.ok) {
-      throw new Error(`GitHub close pull request failed (${res.status})`);
+      throw githubHttpError("close pull request", res);
     }
   }
 
@@ -91,7 +121,7 @@ export class GitHubClient {
         },
       );
       if (!res.ok) {
-        throw new Error(`GitHub list installation repositories failed (${res.status})`);
+        throw githubHttpError("list installation repositories", res);
       }
 
       const body = (await res.json()) as InstallationRepositoriesResponse;
@@ -130,7 +160,7 @@ export class GitHubClient {
         body: JSON.stringify({ body }),
       });
       if (!updateRes.ok) {
-        throw new Error(`GitHub update issue comment failed (${updateRes.status})`);
+        throw githubHttpError("update issue comment", updateRes);
       }
       return;
     }
@@ -141,7 +171,7 @@ export class GitHubClient {
       body: JSON.stringify({ body }),
     });
     if (!createRes.ok) {
-      throw new Error(`GitHub create issue comment failed (${createRes.status})`);
+      throw githubHttpError("create issue comment", createRes);
     }
   }
 
@@ -160,7 +190,7 @@ export class GitHubClient {
       },
     );
     if (!res.ok) {
-      throw new Error(`GitHub list issue comments failed (${res.status})`);
+      throw githubHttpError("list issue comments", res);
     }
     const comments = (await res.json()) as CommentRecord[];
     return comments.find((comment) => comment.body?.includes(marker)) ?? null;
@@ -180,11 +210,14 @@ export class GitHubClient {
       return null;
     }
     if (!res.ok) {
-      throw new Error(`GitHub repository installation lookup failed (${res.status})`);
+      throw githubHttpError("repository installation lookup", res);
     }
     const body = (await res.json()) as { id?: number };
     if (typeof body.id !== "number" || body.id <= 0) {
-      throw new Error("GitHub repository installation lookup response missing id");
+      throw githubProtocolError(
+        "GitHub repository installation lookup response missing id",
+        "INSTALLATION_NOT_FOUND",
+      );
     }
     return body.id;
   }
@@ -210,11 +243,11 @@ export class GitHubClient {
     }
 
     if (!res.ok) {
-      throw new Error(`GitHub installation token request failed (${res.status})`);
+      throw githubHttpError("installation token request", res);
     }
     const body = (await res.json()) as { token: string };
     if (!body.token) {
-      throw new Error("GitHub installation token response missing token");
+      throw githubProtocolError("GitHub installation token response missing token");
     }
     return body.token;
   }

@@ -153,7 +153,7 @@ Indexes/constraints:
 ### `bot_actions`
 
 - `id uuid pk`
-- `action_type text not null` (for MVP: `CLOSE_PR`)
+- `action_type text not null` (`UPSERT_PR_COMMENT` or `CLOSE_PR_WITH_COMMENT`)
 - `challenge_id uuid null references pr_challenges(id)`
 - `github_repo_id bigint not null`
 - `github_pr_number int not null`
@@ -164,11 +164,13 @@ Indexes/constraints:
 - `completed_at timestamptz null`
 - `failure_reason text null`
 - `attempts int not null default 0`
+- `available_at timestamptz not null` (retry backoff deadline)
 - `created_at timestamptz not null`
 - `updated_at timestamptz not null`
 
 Indexes:
-- `(status, created_at)` for claim scans.
+- `(status, available_at, created_at)` for ready-to-claim scans.
+- `(claimed_at)` for expired claim-lease scans.
 - `(github_repo_id, github_pr_number)` for action lookup.
 
 ### `spot_quotes`

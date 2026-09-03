@@ -521,7 +521,7 @@ test("outbox polling sends RETRYABLE_FAILURE for GitHub execution errors", async
     if (url === "http://backend.local/internal/v2/bot-actions/dddddddd-dddd-dddd-dddd-dddddddddddd/result") {
       const typedBody = body as { outcome: string; failure_code: string };
       assert.equal(typedBody.outcome, "RETRYABLE_FAILURE");
-      assert.equal(typedBody.failure_code, "EXECUTION_ERROR");
+      assert.equal(typedBody.failure_code, "GITHUB_HTTP_500");
       return new Response(JSON.stringify({ id: "dddddddd-dddd-dddd-dddd-dddddddddddd", status: "PENDING" }), {
         status: 200,
         headers: { "content-type": "application/json" },

@@ -42,6 +42,11 @@ use crate::{
     },
 };
 
+const BOT_ACTION_CLAIM_LEASE_SECONDS: i64 = 5 * 60;
+const BOT_ACTION_MAX_ATTEMPTS: i32 = 8;
+const BOT_ACTION_RETRY_BASE_SECONDS: i64 = 5;
+const BOT_ACTION_RETRY_MAX_SECONDS: i64 = 15 * 60;
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
@@ -1636,14 +1641,18 @@ async fn internal_v2_bot_actions_claim(
 
     let limit = payload.limit.unwrap_or(25).clamp(1, 100);
     let mut tx = state.pool.begin().await?;
+    let now = Utc::now();
+    let lease_expired_before = now - Duration::seconds(BOT_ACTION_CLAIM_LEASE_SECONDS);
     let rows: Vec<BotActionRow> = sqlx::query_as(
         r#"
         update bot_actions a
         set status = 'CLAIMED', claimed_at = $2, claimed_by = $3, attempts = attempts + 1, updated_at = $2
         where a.id in (
           select a2.id from bot_actions a2
-          where a2.status = 'PENDING'
-          order by a2.created_at asc
+          where (a2.status = 'PENDING' and a2.available_at <= $2)
+             or (a2.status = 'CLAIMED' and (a2.claimed_at is null or a2.claimed_at <= $4))
+          order by case when a2.status = 'CLAIMED' then a2.claimed_at else a2.available_at end asc,
+                   a2.created_at asc
           limit $1
           for update skip locked
         )
@@ -1652,8 +1661,9 @@ async fn internal_v2_bot_actions_claim(
         "#,
     )
     .bind(limit)
-    .bind(Utc::now())
+    .bind(now)
     .bind(payload.worker_id)
+    .bind(lease_expired_before)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1722,21 +1732,41 @@ async fn internal_v2_bot_action_result(
         }
         "DONE".to_string()
     } else if outcome == "RETRYABLE_FAILURE" {
+        let attempts: Option<i32> = sqlx::query_scalar(
+            "select attempts from bot_actions where id = $1 and status = 'CLAIMED' and claimed_by = $2",
+        )
+        .bind(action_id)
+        .bind(&worker_id)
+        .fetch_optional(&state.pool)
+        .await?;
+        let attempts = attempts.ok_or(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"))?;
+        let exhausted = attempts >= BOT_ACTION_MAX_ATTEMPTS;
+        let next_status = if exhausted { "FAILED" } else { "PENDING" };
+        let completed_at = if exhausted { Some(now) } else { None };
+        let available_at = if exhausted {
+            now
+        } else {
+            now + Duration::seconds(bot_action_retry_delay_seconds(attempts))
+        };
         let updated = sqlx::query(
             r#"
             update bot_actions
-            set status = 'PENDING', claimed_by = null, claimed_at = null, failure_code = $3, failure_reason = $4, updated_at = $5
+            set status = $3, claimed_by = null, claimed_at = null, failure_code = $4,
+                failure_reason = $5, completed_at = $6, available_at = $7, updated_at = $8
             where id = $1 and status = 'CLAIMED' and claimed_by = $2
             "#,
         )
         .bind(action_id)
         .bind(&worker_id)
+        .bind(next_status)
         .bind(payload.failure_code)
         .bind(
             payload
                 .failure_message
                 .unwrap_or_else(|| "retry requested".to_string()),
         )
+        .bind(completed_at)
+        .bind(available_at)
         .bind(now)
         .execute(&state.pool)
         .await?;
@@ -1744,7 +1774,7 @@ async fn internal_v2_bot_action_result(
         if updated.rows_affected() == 0 {
             return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
         }
-        "PENDING".to_string()
+        next_status.to_string()
     } else {
         let updated = sqlx::query(
             r#"
@@ -2084,6 +2114,13 @@ fn active_challenge_decision(
     }
 }
 
+fn bot_action_retry_delay_seconds(attempts: i32) -> i64 {
+    let exponent = attempts.saturating_sub(1).clamp(0, 30) as u32;
+    BOT_ACTION_RETRY_BASE_SECONDS
+        .saturating_mul(1_i64 << exponent)
+        .min(BOT_ACTION_RETRY_MAX_SECONDS)
+}
+
 fn decimal_wei_to_u128(value: &Decimal) -> ApiResult<u128> {
     value
         .normalize()
@@ -2242,6 +2279,14 @@ mod tests {
             active_challenge_decision("VERIFIED", "same-head", "same-head"),
             ActiveChallengeDecision::KeepResolved
         );
+    }
+
+    #[test]
+    fn bot_action_retry_backoff_is_exponential_and_capped() {
+        assert_eq!(bot_action_retry_delay_seconds(1), 5);
+        assert_eq!(bot_action_retry_delay_seconds(2), 10);
+        assert_eq!(bot_action_retry_delay_seconds(8), 640);
+        assert_eq!(bot_action_retry_delay_seconds(100), 900);
     }
 
     #[test]

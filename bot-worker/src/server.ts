@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { URL } from "node:url";
 import { BackendClient } from "./backend.js";
 import type { AppConfig } from "./config.js";
-import { GitHubClient } from "./github.js";
+import { GitHubApiError, GitHubClient } from "./github.js";
 import type { BotAction, BotActionOutcome, NormalizedInstallationSyncEvent } from "./types.js";
 import { parseGitHubWebhookEvent } from "./webhook.js";
 
@@ -163,14 +163,15 @@ const classifyActionError = (error: unknown): BotActionExecutionError => {
     return error;
   }
 
-  const message = error instanceof Error ? error.message : String(error);
-  if (
-    message.includes("GitHub installation token request failed (404)") ||
-    message.includes("GitHub repository installation lookup failed (404)") ||
-    message.includes("GitHub repository installation lookup response missing id")
-  ) {
-    return new BotActionExecutionError(message, "FAILED", "INSTALLATION_NOT_FOUND");
+  if (error instanceof GitHubApiError) {
+    return new BotActionExecutionError(
+      error.message,
+      error.retryable ? "RETRYABLE_FAILURE" : "FAILED",
+      error.code,
+    );
   }
+
+  const message = error instanceof Error ? error.message : String(error);
   return new BotActionExecutionError(message, "RETRYABLE_FAILURE", "EXECUTION_ERROR");
 };
 
