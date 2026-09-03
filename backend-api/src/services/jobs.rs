@@ -62,7 +62,7 @@ async fn process_due_challenges(state: &AppState) -> ApiResult<()> {
         .fetch_optional(&state.pool)
         .await?;
 
-        let result = sqlx::query(
+        let transitioned_status: Option<String> = sqlx::query_scalar(
             r#"
             update pr_challenges c
             set status = case
@@ -76,38 +76,41 @@ async fn process_due_challenges(state: &AppState) -> ApiResult<()> {
                          end,
                 updated_at = $2
             where c.id = $1 and c.status = 'PENDING'
+            returning c.status
             "#,
         )
         .bind(challenge_id)
         .bind(Utc::now())
-        .execute(&state.pool)
+        .fetch_optional(&state.pool)
         .await?;
 
-        if result.rows_affected() > 0 {
+        if let Some(transitioned_status) = transitioned_status {
             sqlx::query(
                 "insert into audit_events (id, event_type, entity_type, entity_id, payload, created_at) values ($1, 'CHALLENGE_DEADLINE_SWEEP', 'challenge', $2, $3, $4)",
             )
             .bind(Uuid::new_v4())
             .bind(challenge_id.to_string())
-            .bind(json!({"job":"deadline_sweeper"}))
+            .bind(json!({"job":"deadline_sweeper", "status": transitioned_status}))
             .bind(Utc::now())
             .execute(&state.pool)
             .await?;
 
-            if let Some((github_repo_id, github_pr_number, installation_id, repo_full_name)) =
-                challenge_meta
-            {
-                queue_bot_action(
-                    state,
-                    challenge_id,
-                    installation_id,
-                    github_repo_id,
-                    &repo_full_name,
-                    github_pr_number,
-                    "Stake verification was not completed within 30 minutes, so this PR has been closed.",
-                    json!({"source":"deadline_sweeper"}),
-                )
-                .await?;
+            if should_queue_timeout_close(&transitioned_status) {
+                if let Some((github_repo_id, github_pr_number, installation_id, repo_full_name)) =
+                    challenge_meta
+                {
+                    queue_bot_action(
+                        state,
+                        challenge_id,
+                        installation_id,
+                        github_repo_id,
+                        &repo_full_name,
+                        github_pr_number,
+                        "Stake verification was not completed within 30 minutes, so this PR has been closed.",
+                        json!({"source":"deadline_sweeper"}),
+                    )
+                    .await?;
+                }
             }
         }
     }
@@ -190,6 +193,10 @@ fn retention_cutoff(now_unix: i64) -> chrono::DateTime<Utc> {
         - chrono::Duration::days(365)
 }
 
+fn should_queue_timeout_close(transitioned_status: &str) -> bool {
+    transitioned_status == "TIMED_OUT_CLOSED"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +206,11 @@ mod tests {
         let now = 1_800_000_000i64;
         let cutoff = retention_cutoff(now);
         assert_eq!(cutoff.timestamp(), now - 365 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn queues_close_only_for_timed_out_challenges() {
+        assert!(should_queue_timeout_close("TIMED_OUT_CLOSED"));
+        assert!(!should_queue_timeout_close("EXEMPT"));
     }
 }
