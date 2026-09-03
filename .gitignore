@@ -5,3 +5,4 @@ frontend-web/tsconfig.tsbuildinfo
 .e2e
 *.swp
 **/.env
+deploy/env/backend.env
