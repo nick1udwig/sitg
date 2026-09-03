@@ -11,7 +11,7 @@ import type {
   PrAction,
 } from "./types.js";
 
-const SUPPORTED_PR_ACTIONS = new Set<PrAction>(["opened", "reopened", "synchronize"]);
+const SUPPORTED_PR_ACTIONS = new Set<PrAction>(["opened", "reopened", "ready_for_review", "synchronize"]);
 const SUPPORTED_INSTALLATION_ACTIONS = new Set<InstallationAction>(["created", "deleted", "suspend", "unsuspend"]);
 const SUPPORTED_INSTALLATION_REPO_ACTIONS = new Set<InstallationRepositoriesAction>(["added", "removed"]);
 const SUPPORTED_ACCOUNT_TYPES = new Set<InstallationAccountType>(["User", "Organization"]);

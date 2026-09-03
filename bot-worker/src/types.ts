@@ -1,4 +1,4 @@
-export type PrAction = "opened" | "reopened" | "synchronize";
+export type PrAction = "opened" | "reopened" | "ready_for_review" | "synchronize";
 
 export type NormalizedPrEvent = {
   delivery_id: string;

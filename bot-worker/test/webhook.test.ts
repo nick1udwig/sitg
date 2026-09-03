@@ -43,6 +43,32 @@ test("parseGitHubWebhookEvent returns normalized pull_request event", () => {
   assert.equal(parsed.payload.event_time, "2026-02-13T00:00:00.000Z");
 });
 
+test("parseGitHubWebhookEvent accepts ready_for_review pull requests", () => {
+  const payload = {
+    action: "ready_for_review",
+    installation: { id: 123 },
+    repository: { id: 456, full_name: "org/repo" },
+    pull_request: {
+      number: 42,
+      id: 777,
+      html_url: "https://github.com/org/repo/pull/42",
+      draft: false,
+      user: { id: 999, login: "alice" },
+      head: { sha: "abc123" },
+    },
+  };
+  const { raw, headers, secret } = makeSignedEvent("pull_request", "delivery-ready", payload);
+  const parsed = parseGitHubWebhookEvent(headers, raw, secret);
+
+  assert.ok(parsed);
+  assert.equal(parsed?.event_name, "pull_request");
+  if (!parsed || parsed.event_name !== "pull_request") {
+    throw new Error("expected pull_request event");
+  }
+  assert.equal(parsed.payload.action, "ready_for_review");
+  assert.equal(parsed.payload.pull_request.is_draft, false);
+});
+
 test("parseGitHubWebhookEvent returns normalized installation_repositories event", () => {
   const payload = {
     action: "added",

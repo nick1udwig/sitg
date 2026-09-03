@@ -1281,13 +1281,52 @@ async fn internal_v2_pr_events(
     .fetch_optional(&state.pool)
     .await?;
 
-    let challenge = if let Some(existing) = existing {
-        if existing.status == "PENDING" {
-            Some((existing.id, existing.gate_token))
-        } else {
-            None
+    let mut create_challenge = existing.is_none();
+    let mut challenge = None;
+
+    if let Some(existing) = existing {
+        match active_challenge_decision(
+            &existing.status,
+            &existing.head_sha,
+            &payload.pull_request.head_sha,
+        ) {
+            ActiveChallengeDecision::ReusePending => {
+                challenge = Some((existing.id, existing.gate_token));
+            }
+            ActiveChallengeDecision::KeepResolved => {}
+            ActiveChallengeDecision::Supersede => {
+                let now = Utc::now();
+                sqlx::query(
+                    r#"
+                    update pr_challenges
+                    set status = 'CANCELED', updated_at = $2
+                    where id = $1 and status in ('PENDING', 'VERIFIED', 'EXEMPT')
+                    "#,
+                )
+                .bind(existing.id)
+                .bind(now)
+                .execute(&state.pool)
+                .await?;
+
+                sqlx::query(
+                    r#"
+                    update bot_actions
+                    set status = 'FAILED', completed_at = $2, failure_code = 'CHALLENGE_SUPERSEDED',
+                        failure_reason = 'pull request head changed', updated_at = $2
+                    where challenge_id = $1 and status = 'PENDING'
+                    "#,
+                )
+                .bind(existing.id)
+                .bind(now)
+                .execute(&state.pool)
+                .await?;
+
+                create_challenge = true;
+            }
         }
-    } else {
+    }
+
+    if create_challenge {
         let challenge_id = Uuid::new_v4();
         let gate_token = build_token(24);
         let deadline_at = payload.event_time + Duration::minutes(30);
@@ -1329,8 +1368,8 @@ async fn internal_v2_pr_events(
         .execute(&state.pool)
         .await?;
 
-        Some((challenge_id, gate_token))
-    };
+        challenge = Some((challenge_id, gate_token));
+    }
 
     let mut enqueued_actions = 0i32;
     if let Some((challenge_id, gate_token)) = challenge.as_ref() {
@@ -1998,6 +2037,27 @@ fn can_force_unlink_for_testing(github_login: &str, wallet_address: &str) -> boo
         && wallet_address.eq_ignore_ascii_case("0xca22C688DbE89ae28B621714fAeaBFbb77bb75A8")
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ActiveChallengeDecision {
+    ReusePending,
+    KeepResolved,
+    Supersede,
+}
+
+fn active_challenge_decision(
+    existing_status: &str,
+    existing_head_sha: &str,
+    incoming_head_sha: &str,
+) -> ActiveChallengeDecision {
+    if existing_head_sha != incoming_head_sha {
+        ActiveChallengeDecision::Supersede
+    } else if existing_status == "PENDING" {
+        ActiveChallengeDecision::ReusePending
+    } else {
+        ActiveChallengeDecision::KeepResolved
+    }
+}
+
 fn decimal_wei_to_u128(value: &Decimal) -> ApiResult<u128> {
     value
         .normalize()
@@ -2128,6 +2188,34 @@ mod tests {
             "someone-else",
             "0xca22c688dbe89ae28b621714faeabfbb77bb75a8"
         ));
+    }
+
+    #[test]
+    fn supersedes_active_challenge_when_pr_head_changes() {
+        assert_eq!(
+            active_challenge_decision("PENDING", "old-head", "new-head"),
+            ActiveChallengeDecision::Supersede
+        );
+        assert_eq!(
+            active_challenge_decision("VERIFIED", "old-head", "new-head"),
+            ActiveChallengeDecision::Supersede
+        );
+        assert_eq!(
+            active_challenge_decision("EXEMPT", "old-head", "new-head"),
+            ActiveChallengeDecision::Supersede
+        );
+    }
+
+    #[test]
+    fn reuses_only_pending_challenge_for_same_pr_head() {
+        assert_eq!(
+            active_challenge_decision("PENDING", "same-head", "same-head"),
+            ActiveChallengeDecision::ReusePending
+        );
+        assert_eq!(
+            active_challenge_decision("VERIFIED", "same-head", "same-head"),
+            ActiveChallengeDecision::KeepResolved
+        );
     }
 
     #[test]
