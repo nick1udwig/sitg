@@ -61,6 +61,7 @@ services:
       npm run build &&
       openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/github-app.pem >/dev/null 2>&1 &&
       export GITHUB_APP_PRIVATE_KEY=\"$(cat /tmp/github-app.pem)\" &&
+      export BACKEND_INTERNAL_SIGNING_KEY=\"$(cat /workspace/.e2e/internal-signing-key.pem)\" &&
       node dist/src/index.js
       "
     environment:
@@ -69,7 +70,6 @@ services:
       GITHUB_API_BASE_URL: http://mock-github:9010
       BACKEND_BASE_URL: http://backend:8080
       BACKEND_BOT_KEY_ID: e2e_service_key
-      BACKEND_INTERNAL_HMAC_SECRET: e2e_internal_secret
       GITHUB_APP_ID: "1"
       WORKER_ID: e2e-bot-worker-1
       OUTBOX_POLLING_ENABLED: "true"

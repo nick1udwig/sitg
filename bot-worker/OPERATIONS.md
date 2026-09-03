@@ -39,7 +39,7 @@ Suggested alerts:
 - Backend and GitHub HTTP calls use exponential backoff retries.
 - Comment posting uses marker-based upsert and is safe to retry.
 - Close PR operation is safe if PR is already closed.
-- Outbox claim/result requests use fresh signatures for each request.
+- Each backend attempt uses a fresh UUID nonce and Ed25519 signature covering the exact request body.
 
 ## Failure handling
 
@@ -52,8 +52,8 @@ Primary path:
 Outcome behavior:
 
 - `SUCCEEDED`: action applied.
-- `RETRYABLE_FAILURE`: transient execution failure; backend may requeue.
-- `FAILED`: invalid/unsupported action payload; terminal.
+- `RETRYABLE_FAILURE`: transient execution failure; backend applies capped exponential backoff and stops after 8 attempts.
+- `FAILED`: invalid/unsupported action payload or permanent GitHub response; terminal.
 
 ## Secret rotation
 
@@ -63,17 +63,10 @@ Rotate `GITHUB_WEBHOOK_SECRET`:
 2. Update GitHub App webhook secret and deploy bot with new value immediately.
 3. Verify webhook deliveries are accepted.
 
-Rotate `BACKEND_INTERNAL_HMAC_SECRET`:
+Rotate the backend signing key pair:
 
-1. Roll backend first to accept new secret.
-2. Deploy bot with updated `BACKEND_INTERNAL_HMAC_SECRET`.
-3. Confirm internal calls succeed (`/internal/v2/github/events/*`, `/internal/v2/bot-actions/*`).
-4. Remove old secret from backend acceptance path.
-
-Rotate bot key id/secret pair:
-
-1. Create a new service bot key (`key_id` + secret shown once).
-2. Deploy bot with new `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_HMAC_SECRET`.
+1. Provision a new service bot key (`key_id` + Ed25519 private key shown once).
+2. Deploy bot with new `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_SIGNING_KEY`.
 3. Confirm internal calls succeed.
 4. Revoke old key.
 

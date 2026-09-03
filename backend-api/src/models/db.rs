@@ -69,3 +69,11 @@ pub struct BotActionRow {
     pub attempts: i32,
     pub created_at: DateTime<Utc>,
 }
+
+#[derive(Debug, FromRow)]
+pub struct BotActionResultStateRow {
+    pub status: String,
+    pub claimed_by: Option<String>,
+    pub failure_code: Option<String>,
+    pub failure_reason: Option<String>,
+}

@@ -186,7 +186,7 @@ Required values in `/etc/sitg/bot-worker.env`:
 - `GITHUB_WEBHOOK_SECRET`
 - `BACKEND_BASE_URL` (for production SaaS: `https://sitg.io`)
 - `BACKEND_BOT_KEY_ID`
-- `BACKEND_INTERNAL_HMAC_SECRET`
+- `BACKEND_INTERNAL_SIGNING_KEY`
 - `GITHUB_APP_ID`
 - `GITHUB_APP_PRIVATE_KEY`
 

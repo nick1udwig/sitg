@@ -29,19 +29,23 @@ Required headers for all `/internal/v2/*` endpoints:
 
 - `x-sitg-key-id`
 - `x-sitg-timestamp` (unix seconds)
-- `x-sitg-signature` (`sha256=<hex_hmac>`)
+- `x-sitg-nonce` (UUID generated for this attempt)
+- `x-sitg-signature` (`ed25519=<hex_signature>`)
 
 Signature input format:
 
 ```text
-{timestamp}.{message}
+{timestamp}.{nonce}.{message}.{sha256_hex(raw_request_body)}
 ```
 
 Rules:
 
 - Timestamp skew must be within 5 minutes.
-- Signature is single-use (replay protected).
-- `x-sitg-key-id` resolves to an active SITG service bot key.
+- A `(key_id, nonce)` pair is single-use and persisted for replay protection.
+- Every HTTP retry uses a fresh nonce and signature, even within the same second.
+- The raw request body is covered by the signature; changing any JSON byte invalidates it.
+- `x-sitg-key-id` resolves to an active SITG service bot Ed25519 public key.
+- Only the private key is deployed to bot workers; it is never stored in the backend database.
 
 Message strings by endpoint:
 

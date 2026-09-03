@@ -6,7 +6,7 @@ const shouldRetryStatus = (status: number): boolean => {
 
 export const fetchWithRetry = async (
   url: string,
-  init: RequestInit,
+  init: RequestInit | (() => RequestInit),
   attempts = 3,
   baseDelayMs = 200,
 ): Promise<Response> => {
@@ -14,7 +14,8 @@ export const fetchWithRetry = async (
 
   for (let i = 0; i < attempts; i += 1) {
     try {
-      const res = await fetch(url, init);
+      const attemptInit = typeof init === "function" ? init() : init;
+      const res = await fetch(url, attemptInit);
       if (!shouldRetryStatus(res.status) || i === attempts - 1) {
         return res;
       }

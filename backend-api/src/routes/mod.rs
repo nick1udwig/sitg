@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect},
@@ -33,7 +34,10 @@ use crate::{
             WalletLinkConfirmRequest, WalletLinkConfirmResponse, WalletLinkStatusResponse,
             WhitelistPutRequest,
         },
-        db::{BotActionRow, ChallengeRow, CurrentUserRow, RepoConfigRow, WalletLinkChallengeRow},
+        db::{
+            BotActionResultStateRow, BotActionRow, ChallengeRow, CurrentUserRow, RepoConfigRow,
+            WalletLinkChallengeRow,
+        },
     },
     services::internal_auth::verify_internal_request as verify_internal_with_key_id,
     services::signature_service::{
@@ -1160,17 +1164,25 @@ async fn get_stake_status(
 async fn internal_v2_pr_events(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<InternalPrEventRequest>,
+    body: Bytes,
 ) -> ApiResult<Json<InternalPrEventResponse>> {
+    let payload: InternalPrEventRequest = parse_internal_json(&body)?;
     if payload.delivery_id.trim().is_empty() {
         return Err(ApiError::validation("delivery_id is required"));
     }
 
     let message = format!("github-event:pull_request:{}", payload.delivery_id);
-    let auth = verify_internal_from_headers(&state, &headers, &message).await?;
+    let auth = verify_internal_from_headers(&state, &headers, &message, &body).await?;
 
     let mut tx = state.pool.begin().await?;
-    store_internal_replay(&mut *tx, &auth.signature_hex, auth.timestamp).await?;
+    store_internal_replay(
+        &mut *tx,
+        &auth.key_id,
+        auth.request_nonce,
+        &auth.signature_hex,
+        auth.timestamp,
+    )
+    .await?;
     let is_new_delivery =
         register_github_delivery(&mut *tx, &payload.delivery_id, "pull_request").await?;
     if !is_new_delivery {
@@ -1426,17 +1438,25 @@ async fn internal_v2_pr_events(
 async fn internal_v2_installation_sync(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<InternalInstallationSyncRequest>,
+    body: Bytes,
 ) -> ApiResult<Json<InternalInstallationSyncResponse>> {
+    let payload: InternalInstallationSyncRequest = parse_internal_json(&body)?;
     if payload.delivery_id.trim().is_empty() {
         return Err(ApiError::validation("delivery_id is required"));
     }
 
     let message = format!("github-event:installation-sync:{}", payload.delivery_id);
-    let auth = verify_internal_from_headers(&state, &headers, &message).await?;
+    let auth = verify_internal_from_headers(&state, &headers, &message, &body).await?;
 
     let mut tx = state.pool.begin().await?;
-    store_internal_replay(&mut *tx, &auth.signature_hex, auth.timestamp).await?;
+    store_internal_replay(
+        &mut *tx,
+        &auth.key_id,
+        auth.request_nonce,
+        &auth.signature_hex,
+        auth.timestamp,
+    )
+    .await?;
     let is_new_delivery =
         register_github_delivery(&mut *tx, &payload.delivery_id, &payload.event_name).await?;
     if !is_new_delivery {
@@ -1630,42 +1650,68 @@ async fn internal_v2_installation_sync(
 async fn internal_v2_bot_actions_claim(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<BotActionClaimRequest>,
+    body: Bytes,
 ) -> ApiResult<Json<BotActionClaimResponse>> {
+    let payload: BotActionClaimRequest = parse_internal_json(&body)?;
     if payload.worker_id.trim().is_empty() {
         return Err(ApiError::validation("worker_id is required"));
     }
     let nonce_message = format!("bot-actions-claim:{}", payload.worker_id);
-    let auth = verify_internal_from_headers(&state, &headers, &nonce_message).await?;
-    store_internal_replay(&state.pool, &auth.signature_hex, auth.timestamp).await?;
+    let auth = verify_internal_from_headers(&state, &headers, &nonce_message, &body).await?;
+    store_internal_replay(
+        &state.pool,
+        &auth.key_id,
+        auth.request_nonce,
+        &auth.signature_hex,
+        auth.timestamp,
+    )
+    .await?;
 
     let limit = payload.limit.unwrap_or(25).clamp(1, 100);
     let mut tx = state.pool.begin().await?;
     let now = Utc::now();
     let lease_expired_before = now - Duration::seconds(BOT_ACTION_CLAIM_LEASE_SECONDS);
-    let rows: Vec<BotActionRow> = sqlx::query_as(
+    let mut rows: Vec<BotActionRow> = sqlx::query_as(
         r#"
-        update bot_actions a
-        set status = 'CLAIMED', claimed_at = $2, claimed_by = $3, attempts = attempts + 1, updated_at = $2
-        where a.id in (
-          select a2.id from bot_actions a2
-          where (a2.status = 'PENDING' and a2.available_at <= $2)
-             or (a2.status = 'CLAIMED' and (a2.claimed_at is null or a2.claimed_at <= $4))
-          order by case when a2.status = 'CLAIMED' then a2.claimed_at else a2.available_at end asc,
-                   a2.created_at asc
-          limit $1
-          for update skip locked
-        )
-        returning a.id, a.action_type, a.installation_id, a.github_repo_id, a.repo_full_name, a.github_pr_number,
-                  a.challenge_id, a.payload, a.attempts, a.created_at
+        select id, action_type, installation_id, github_repo_id, repo_full_name, github_pr_number,
+               challenge_id, payload, attempts, created_at
+        from bot_actions
+        where status = 'CLAIMED' and claimed_by = $1
+        order by claimed_at asc nulls first, created_at asc
+        limit $2
+        for update skip locked
         "#,
     )
+    .bind(&payload.worker_id)
     .bind(limit)
-    .bind(now)
-    .bind(payload.worker_id)
-    .bind(lease_expired_before)
     .fetch_all(&mut *tx)
     .await?;
+
+    if rows.is_empty() {
+        rows = sqlx::query_as(
+            r#"
+            update bot_actions a
+            set status = 'CLAIMED', claimed_at = $2, claimed_by = $3, attempts = attempts + 1, updated_at = $2
+            where a.id in (
+              select a2.id from bot_actions a2
+              where (a2.status = 'PENDING' and a2.available_at <= $2)
+                 or (a2.status = 'CLAIMED' and (a2.claimed_at is null or a2.claimed_at <= $4))
+              order by case when a2.status = 'CLAIMED' then a2.claimed_at else a2.available_at end asc,
+                       a2.created_at asc
+              limit $1
+              for update skip locked
+            )
+            returning a.id, a.action_type, a.installation_id, a.github_repo_id, a.repo_full_name, a.github_pr_number,
+                      a.challenge_id, a.payload, a.attempts, a.created_at
+            "#,
+        )
+        .bind(limit)
+        .bind(now)
+        .bind(&payload.worker_id)
+        .bind(lease_expired_before)
+        .fetch_all(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
 
     let actions = rows
@@ -1691,8 +1737,9 @@ async fn internal_v2_bot_action_result(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(action_id): Path<Uuid>,
-    Json(payload): Json<BotActionResultRequest>,
+    body: Bytes,
 ) -> ApiResult<Json<BotActionResultResponse>> {
+    let payload: BotActionResultRequest = parse_internal_json(&body)?;
     if payload.worker_id.trim().is_empty() {
         return Err(ApiError::validation("worker_id is required"));
     }
@@ -1709,28 +1756,45 @@ async fn internal_v2_bot_action_result(
     }
 
     let nonce_message = format!("bot-action-result:{action_id}:{worker_id}:{outcome}");
-    let auth = verify_internal_from_headers(&state, &headers, &nonce_message).await?;
-    store_internal_replay(&state.pool, &auth.signature_hex, auth.timestamp).await?;
+    let auth = verify_internal_from_headers(&state, &headers, &nonce_message, &body).await?;
+    store_internal_replay(
+        &state.pool,
+        &auth.key_id,
+        auth.request_nonce,
+        &auth.signature_hex,
+        auth.timestamp,
+    )
+    .await?;
 
+    let failure_code = payload.failure_code;
+    let failure_reason = match outcome.as_str() {
+        "RETRYABLE_FAILURE" => Some(
+            payload
+                .failure_message
+                .unwrap_or_else(|| "retry requested".to_string()),
+        ),
+        "FAILED" => Some(
+            payload
+                .failure_message
+                .unwrap_or_else(|| "unknown failure".to_string()),
+        ),
+        _ => None,
+    };
     let now = Utc::now();
-    let status = if outcome == "SUCCEEDED" {
-        let updated = sqlx::query(
+    let updated_status: Option<String> = if outcome == "SUCCEEDED" {
+        sqlx::query_scalar(
             r#"
             update bot_actions
             set status = 'DONE', completed_at = $3, failure_code = null, failure_reason = null, updated_at = $3
             where id = $1 and status = 'CLAIMED' and claimed_by = $2
+            returning status
             "#,
         )
         .bind(action_id)
         .bind(&worker_id)
         .bind(now)
-        .execute(&state.pool)
-        .await?;
-
-        if updated.rows_affected() == 0 {
-            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
-        }
-        "DONE".to_string()
+        .fetch_optional(&state.pool)
+        .await?
     } else if outcome == "RETRYABLE_FAILURE" {
         let attempts: Option<i32> = sqlx::query_scalar(
             "select attempts from bot_actions where id = $1 and status = 'CLAIMED' and claimed_by = $2",
@@ -1739,76 +1803,94 @@ async fn internal_v2_bot_action_result(
         .bind(&worker_id)
         .fetch_optional(&state.pool)
         .await?;
-        let attempts = attempts.ok_or(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"))?;
-        let exhausted = attempts >= BOT_ACTION_MAX_ATTEMPTS;
-        let next_status = if exhausted { "FAILED" } else { "PENDING" };
-        let completed_at = if exhausted { Some(now) } else { None };
-        let available_at = if exhausted {
-            now
+        if let Some(attempts) = attempts {
+            let exhausted = attempts >= BOT_ACTION_MAX_ATTEMPTS;
+            let next_status = if exhausted { "FAILED" } else { "PENDING" };
+            let completed_at = if exhausted { Some(now) } else { None };
+            let available_at = if exhausted {
+                now
+            } else {
+                now + Duration::seconds(bot_action_retry_delay_seconds(attempts))
+            };
+            sqlx::query_scalar(
+                r#"
+                update bot_actions
+                set status = $3, claimed_by = $2, claimed_at = null, failure_code = $4,
+                    failure_reason = $5, completed_at = $6, available_at = $7, updated_at = $8
+                where id = $1 and status = 'CLAIMED' and claimed_by = $2
+                returning status
+                "#,
+            )
+            .bind(action_id)
+            .bind(&worker_id)
+            .bind(next_status)
+            .bind(failure_code.as_deref())
+            .bind(failure_reason.as_deref())
+            .bind(completed_at)
+            .bind(available_at)
+            .bind(now)
+            .fetch_optional(&state.pool)
+            .await?
         } else {
-            now + Duration::seconds(bot_action_retry_delay_seconds(attempts))
-        };
-        let updated = sqlx::query(
-            r#"
-            update bot_actions
-            set status = $3, claimed_by = null, claimed_at = null, failure_code = $4,
-                failure_reason = $5, completed_at = $6, available_at = $7, updated_at = $8
-            where id = $1 and status = 'CLAIMED' and claimed_by = $2
-            "#,
-        )
-        .bind(action_id)
-        .bind(&worker_id)
-        .bind(next_status)
-        .bind(payload.failure_code)
-        .bind(
-            payload
-                .failure_message
-                .unwrap_or_else(|| "retry requested".to_string()),
-        )
-        .bind(completed_at)
-        .bind(available_at)
-        .bind(now)
-        .execute(&state.pool)
-        .await?;
-
-        if updated.rows_affected() == 0 {
-            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
+            None
         }
-        next_status.to_string()
     } else {
-        let updated = sqlx::query(
+        sqlx::query_scalar(
             r#"
             update bot_actions
             set status = 'FAILED', completed_at = $5, failure_code = $3, failure_reason = $4, updated_at = $5
             where id = $1 and status = 'CLAIMED' and claimed_by = $2
+            returning status
             "#,
         )
         .bind(action_id)
         .bind(&worker_id)
-        .bind(payload.failure_code)
-        .bind(
-            payload
-                .failure_message
-                .unwrap_or_else(|| "unknown failure".to_string()),
-        )
+        .bind(failure_code.as_deref())
+        .bind(failure_reason.as_deref())
         .bind(now)
-        .execute(&state.pool)
-        .await?;
-
-        if updated.rows_affected() == 0 {
-            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
-        }
-        "FAILED".to_string()
+        .fetch_optional(&state.pool)
+        .await?
     };
 
-    insert_audit(
-        &state,
-        "BOT_ACTION_RESULT",
-        "bot_action",
-        action_id.to_string(),
-        json!({"worker_id": worker_id, "status": status}),
-    )
-    .await?;
+    let state_changed = updated_status.is_some();
+    let status = if let Some(status) = updated_status {
+        status
+    } else {
+        let existing: Option<BotActionResultStateRow> = sqlx::query_as(
+            "select status, claimed_by, failure_code, failure_reason from bot_actions where id = $1",
+        )
+        .bind(action_id)
+        .fetch_optional(&state.pool)
+        .await?;
+        let Some(existing) = existing else {
+            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
+        };
+        if !is_idempotent_bot_action_result(
+            &outcome,
+            &existing.status,
+            existing.claimed_by.as_deref(),
+            &worker_id,
+            (
+                existing.failure_code.as_deref(),
+                existing.failure_reason.as_deref(),
+            ),
+            (failure_code.as_deref(), failure_reason.as_deref()),
+        ) {
+            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
+        }
+        existing.status
+    };
+
+    if state_changed {
+        insert_audit(
+            &state,
+            "BOT_ACTION_RESULT",
+            "bot_action",
+            action_id.to_string(),
+            json!({"worker_id": worker_id, "status": status}),
+        )
+        .await?;
+    }
 
     Ok(Json(BotActionResultResponse {
         id: action_id,
@@ -1931,6 +2013,7 @@ async fn verify_internal_from_headers(
     state: &AppState,
     headers: &HeaderMap,
     message: &str,
+    body: &[u8],
 ) -> ApiResult<crate::services::internal_auth::InternalAuthContext> {
     let key_id = headers
         .get("x-sitg-key-id")
@@ -1940,15 +2023,30 @@ async fn verify_internal_from_headers(
         .get("x-sitg-timestamp")
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Forbidden)?;
+    let request_nonce = headers
+        .get("x-sitg-nonce")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(ApiError::Forbidden)?;
     let signature_hex = headers
         .get("x-sitg-signature")
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::Forbidden)?;
-    verify_internal_with_key_id(&state.pool, key_id, timestamp, signature_hex, message).await
+    verify_internal_with_key_id(
+        &state.pool,
+        key_id,
+        timestamp,
+        request_nonce,
+        signature_hex,
+        message,
+        body,
+    )
+    .await
 }
 
 async fn store_internal_replay<'e, E>(
     executor: E,
+    key_id: &str,
+    request_nonce: Uuid,
     signature_hex: &str,
     timestamp: i64,
 ) -> ApiResult<()>
@@ -1957,12 +2055,16 @@ where
 {
     let inserted = sqlx::query(
         r#"
-        insert into internal_request_replays (id, signature, timestamp_unix, created_at)
-        values ($1, $2, $3, $4)
-        on conflict (signature) do nothing
+        insert into internal_request_replays (
+          id, key_id, request_nonce, signature, timestamp_unix, created_at
+        )
+        values ($1, $2, $3, $4, $5, $6)
+        on conflict do nothing
         "#,
     )
     .bind(Uuid::new_v4())
+    .bind(key_id)
+    .bind(request_nonce)
     .bind(signature_hex)
     .bind(timestamp)
     .bind(Utc::now())
@@ -1973,6 +2075,10 @@ where
         return Err(ApiError::Forbidden);
     }
     Ok(())
+}
+
+fn parse_internal_json<T: serde::de::DeserializeOwned>(body: &[u8]) -> ApiResult<T> {
+    serde_json::from_slice(body).map_err(|_| ApiError::validation("invalid JSON request body"))
 }
 
 async fn insert_audit(
@@ -2119,6 +2225,28 @@ fn bot_action_retry_delay_seconds(attempts: i32) -> i64 {
     BOT_ACTION_RETRY_BASE_SECONDS
         .saturating_mul(1_i64 << exponent)
         .min(BOT_ACTION_RETRY_MAX_SECONDS)
+}
+
+fn is_idempotent_bot_action_result(
+    outcome: &str,
+    status: &str,
+    claimed_by: Option<&str>,
+    worker_id: &str,
+    stored_failure: (Option<&str>, Option<&str>),
+    requested_failure: (Option<&str>, Option<&str>),
+) -> bool {
+    if claimed_by != Some(worker_id) {
+        return false;
+    }
+
+    let status_matches = match outcome {
+        "SUCCEEDED" => status == "DONE",
+        "FAILED" => status == "FAILED",
+        "RETRYABLE_FAILURE" => matches!(status, "PENDING" | "FAILED"),
+        _ => false,
+    };
+    status_matches
+        && (outcome == "SUCCEEDED" || stored_failure == requested_failure)
 }
 
 fn decimal_wei_to_u128(value: &Decimal) -> ApiResult<u128> {
@@ -2287,6 +2415,34 @@ mod tests {
         assert_eq!(bot_action_retry_delay_seconds(2), 10);
         assert_eq!(bot_action_retry_delay_seconds(8), 640);
         assert_eq!(bot_action_retry_delay_seconds(100), 900);
+    }
+
+    #[test]
+    fn recognizes_only_matching_idempotent_bot_action_results() {
+        assert!(is_idempotent_bot_action_result(
+            "SUCCEEDED",
+            "DONE",
+            Some("worker-1"),
+            "worker-1",
+            (None, None),
+            (None, None),
+        ));
+        assert!(is_idempotent_bot_action_result(
+            "RETRYABLE_FAILURE",
+            "PENDING",
+            Some("worker-1"),
+            "worker-1",
+            (Some("GITHUB_HTTP_500"), Some("retry")),
+            (Some("GITHUB_HTTP_500"), Some("retry")),
+        ));
+        assert!(!is_idempotent_bot_action_result(
+            "FAILED",
+            "FAILED",
+            Some("worker-2"),
+            "worker-1",
+            (Some("A"), Some("failure")),
+            (Some("A"), Some("failure")),
+        ));
     }
 
     #[test]

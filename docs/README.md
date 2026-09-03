@@ -27,7 +27,7 @@ This folder is the top-level product and engineering spec for MVP.
 - Verification is point-in-time: later stake changes do not retroactively invalidate an already-verified PR challenge.
 - Retention policy: keep `audit_events` and signature records for 12 months.
 - Deployment model: SITG runs a centralized multi-tenant bot-worker fleet.
-- Bot auth model: service-owned bot credentials (`key_id` + HMAC secret) for centralized worker auth.
+- Bot auth model: service-owned Ed25519 key pairs (`key_id` + backend-held public key) for centralized worker auth.
 - Backend authorizes internal bot requests by service key, replay protection, and installation/repo ownership data.
 - Installation sync model: backend is source of truth for installation and installation-repository mappings from GitHub webhook events.
 

@@ -34,40 +34,34 @@ Constraints:
 - `installation_id bigint pk`
 - `account_login text not null`
 - `account_type text not null`
+- `active boolean not null`
+- `suspended_at timestamptz null`
+- `deleted_at timestamptz null`
 - `created_at timestamptz not null`
 - `updated_at timestamptz not null`
 
-### `bot_clients`
-
-- `id uuid pk`
-- `owner_user_id uuid not null references users(id)`
-- `name text not null`
-- `status text not null check (status in ('ACTIVE','DISABLED'))`
-- `created_at timestamptz not null`
-- `updated_at timestamptz not null`
-
-### `bot_client_keys`
+### `service_bot_keys`
 
 - `key_id text pk`
-- `bot_client_id uuid not null references bot_clients(id)`
-- `secret_hash text not null`
+- `public_key text null` (base64 DER Ed25519 public key; required for active keys)
+- `secret_hash text null` (legacy migration field; never used for authentication)
 - `active boolean not null default true`
 - `last_used_at timestamptz null`
 - `revoked_at timestamptz null`
 - `created_at timestamptz not null`
 
-Indexes/constraints:
-- index on `(bot_client_id, active)`.
+### `github_installation_repositories`
 
-### `bot_installation_bindings`
-
-- `bot_client_id uuid not null references bot_clients(id)`
 - `installation_id bigint not null references github_installations(installation_id)`
+- `github_repo_id bigint not null`
+- `full_name text not null`
+- `active boolean not null default true`
 - `created_at timestamptz not null`
-- primary key `(bot_client_id, installation_id)`
+- `updated_at timestamptz not null`
+- primary key `(installation_id, github_repo_id)`
 
 Indexes/constraints:
-- unique `(installation_id)` to enforce one active bot client per installation.
+- index on `(github_repo_id, active, updated_at desc)`.
 
 ### `repo_configs`
 
@@ -146,9 +140,12 @@ Indexes/constraints:
 ### `internal_request_replays`
 
 - `id uuid pk`
+- `key_id text not null`
+- `request_nonce uuid not null`
 - `signature text not null unique`
 - `timestamp_unix bigint not null`
 - `created_at timestamptz not null`
+- unique `(key_id, request_nonce)`
 
 ### `bot_actions`
 

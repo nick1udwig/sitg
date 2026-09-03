@@ -4,7 +4,7 @@ import { createHmac, generateKeyPairSync } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { createAppServer } from "../src/server.js";
 import type { AppConfig } from "../src/config.js";
-import { buildInternalHmacSignature } from "../src/crypto.js";
+import { buildInternalEd25519Signature } from "../src/crypto.js";
 
 type FetchCall = {
   url: string;
@@ -16,6 +16,8 @@ type FetchCall = {
 const makeConfig = (): AppConfig => {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
+  const { privateKey: internalPrivateKey } = generateKeyPairSync("ed25519");
+  const internalPrivateKeyPem = internalPrivateKey.export({ type: "pkcs8", format: "pem" }).toString();
   return {
     port: 0,
     githubWebhookSecret: "webhook-secret",
@@ -23,7 +25,7 @@ const makeConfig = (): AppConfig => {
     backendBaseUrl: "http://backend.local",
     backendServiceToken: "backend-token",
     backendBotKeyId: "bck_test_123",
-    backendInternalHmacSecret: "internal-hmac-secret",
+    backendInternalSigningKey: internalPrivateKeyPem,
     githubAppId: "12345",
     githubAppPrivateKey: privateKeyPem,
     workerId: "bot-worker-1",
@@ -86,13 +88,17 @@ test("pull_request webhook forwards to backend v2 with canonical signature messa
       assert.equal(headers.get("authorization"), "Bearer backend-token");
       assert.equal(headers.get("x-sitg-key-id"), "bck_test_123");
       const timestamp = headers.get("x-sitg-timestamp");
+      const nonce = headers.get("x-sitg-nonce");
       const signature = headers.get("x-sitg-signature");
       assert.ok(timestamp);
+      assert.ok(nonce);
       assert.ok(signature);
-      const expected = buildInternalHmacSignature(
-        config.backendInternalHmacSecret,
+      const expected = buildInternalEd25519Signature(
+        config.backendInternalSigningKey,
         Number.parseInt(timestamp, 10),
+        nonce,
         "github-event:pull_request:00000000-0000-0000-0000-000000000123",
+        bodyText ?? "",
       );
       assert.equal(signature, expected);
       return new Response(

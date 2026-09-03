@@ -38,37 +38,42 @@ async fn apply_migrations(pool: &PgPool) {
     pool.execute(include_str!("../migrations/0008_bot_action_reliability.sql"))
         .await
         .expect("apply 0008");
+    pool.execute(include_str!("../migrations/0009_internal_request_signatures.sql"))
+        .await
+        .expect("apply 0009");
 }
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL postgres"]
-async fn replay_signature_is_unique() {
+async fn replay_nonce_is_unique_per_key() {
     let Some(pool) = maybe_pool().await else {
         return;
     };
     apply_migrations(&pool).await;
 
-    let sig = format!("sig-{}", Uuid::new_v4());
+    let request_nonce = Uuid::new_v4();
     sqlx::query(
-        "insert into internal_request_replays (id, signature, timestamp_unix, created_at) values ($1, $2, $3, now())",
+        "insert into internal_request_replays (id, key_id, request_nonce, signature, timestamp_unix, created_at) values ($1, 'test-key', $2, $3, $4, now())",
     )
     .bind(Uuid::new_v4())
-    .bind(&sig)
+    .bind(request_nonce)
+    .bind(format!("sig-{}", Uuid::new_v4()))
     .bind(1_i64)
     .execute(&pool)
     .await
     .expect("first insert");
 
     let second = sqlx::query(
-        "insert into internal_request_replays (id, signature, timestamp_unix, created_at) values ($1, $2, $3, now())",
+        "insert into internal_request_replays (id, key_id, request_nonce, signature, timestamp_unix, created_at) values ($1, 'test-key', $2, $3, $4, now())",
     )
     .bind(Uuid::new_v4())
-    .bind(&sig)
+    .bind(request_nonce)
+    .bind(format!("sig-{}", Uuid::new_v4()))
     .bind(2_i64)
     .execute(&pool)
     .await;
 
-    assert!(second.is_err(), "duplicate signature should fail");
+    assert!(second.is_err(), "duplicate request nonce should fail");
 }
 
 #[tokio::test]

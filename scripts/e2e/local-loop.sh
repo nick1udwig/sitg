@@ -15,7 +15,7 @@ BOT_URL="${BOT_URL:-http://127.0.0.1:${LOCAL_E2E_BOT_PORT}}"
 MOCK_GITHUB_URL="${MOCK_GITHUB_URL:-http://127.0.0.1:${LOCAL_E2E_MOCK_GITHUB_PORT}}"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-e2e_webhook_secret}"
 BOT_KEY_ID="${BOT_KEY_ID:-e2e_service_key}"
-BOT_RAW_SECRET="${BOT_RAW_SECRET:-e2e_internal_secret}"
+BOT_SIGNING_KEY_FILE="$ROOT_DIR/.e2e/internal-signing-key.pem"
 
 COMPOSE=(docker compose -p sitg-local-e2e -f "$COMPOSE_FILE")
 
@@ -93,6 +93,12 @@ hmac_sha256_hex_raw() {
 }
 
 up_stack() {
+  mkdir -p "$(dirname "$BOT_SIGNING_KEY_FILE")"
+  if [[ ! -s "$BOT_SIGNING_KEY_FILE" ]]; then
+    openssl genpkey -algorithm ED25519 -out "$BOT_SIGNING_KEY_FILE" 2>/dev/null
+    chmod 600 "$BOT_SIGNING_KEY_FILE"
+  fi
+
   info "Starting docker compose stack"
   dc up -d postgres mock-github backend bot
 
@@ -111,8 +117,8 @@ up_stack() {
 
 seed_db() {
   info "Seeding database for centralized bot flow"
-  local bot_secret_sha256
-  bot_secret_sha256="$(printf '%s' "$BOT_RAW_SECRET" | sha256sum | awk '{print $1}')"
+  local bot_public_key_base64
+  bot_public_key_base64="$(openssl pkey -in "$BOT_SIGNING_KEY_FILE" -pubout -outform DER 2>/dev/null | openssl base64 -A)"
 
   cat <<SQL | psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 >/dev/null
 truncate table bot_actions, challenge_nonces, pr_confirmations, pr_challenges, internal_request_replays, github_event_deliveries restart identity cascade;
@@ -166,10 +172,11 @@ on conflict (github_repo_id) do update set
   spot_from_cache = excluded.spot_from_cache,
   updated_at = now();
 
-insert into service_bot_keys (key_id, secret_hash, active, revoked_at, created_at)
-values ('${BOT_KEY_ID}', 'sha256:${bot_secret_sha256}', true, null, now())
+insert into service_bot_keys (key_id, public_key, secret_hash, active, revoked_at, created_at)
+values ('${BOT_KEY_ID}', '${bot_public_key_base64}', null, true, null, now())
 on conflict (key_id) do update set
-  secret_hash = excluded.secret_hash,
+  public_key = excluded.public_key,
+  secret_hash = null,
   active = true,
   revoked_at = null;
 SQL

@@ -131,7 +131,7 @@ Scenarios covered by `test`:
 Troubleshooting:
 - If `backend` health check does not come up quickly on first run, wait for Rust compile inside container and watch `scripts/e2e/local-loop.sh logs backend`.
 - If webhooks appear ignored, verify `WEBHOOK_SECRET` in test runner matches bot env (`GITHUB_WEBHOOK_SECRET`).
-- If internal auth fails, ensure `service_bot_keys.secret_hash` matches `BOT_RAW_SECRET` (seed step handles this).
+- If internal auth fails, ensure the worker private key matches `service_bot_keys.public_key` (the seed step handles this).
 - If compose startup fails due to host port collisions, use the port override env vars above.
 
 ## Prerequisites

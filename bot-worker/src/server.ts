@@ -308,7 +308,7 @@ export const createAppServer = (config: AppConfig) => {
     baseUrl: config.backendBaseUrl,
     serviceToken: config.backendServiceToken,
     botKeyId: config.backendBotKeyId,
-    internalHmacSecret: config.backendInternalHmacSecret,
+    internalSigningKey: config.backendInternalSigningKey,
   });
   const github = new GitHubClient({
     appId: config.githubAppId,

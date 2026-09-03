@@ -23,7 +23,7 @@ Set these on every worker replica:
 - `GITHUB_APP_PRIVATE_KEY`
 - `BACKEND_BASE_URL`
 - `BACKEND_BOT_KEY_ID`
-- `BACKEND_INTERNAL_HMAC_SECRET`
+- `BACKEND_INTERNAL_SIGNING_KEY`
 
 How to get each required value:
 
@@ -35,7 +35,7 @@ How to get each required value:
 | `GITHUB_APP_PRIVATE_KEY` | GitHub App private key | GitHub -> Settings -> Developer settings -> GitHub Apps -> your app -> Private keys -> Generate a private key. Store PEM securely. |
 | `BACKEND_BASE_URL` | SITG infra/backend deployment | Use the externally reachable backend URL that serves `internal/v2` routes (example: `https://sitg.io`). |
 | `BACKEND_BOT_KEY_ID` | backend-api internal auth | Create/provision a service bot key in backend-api and copy the returned key id. |
-| `BACKEND_INTERNAL_HMAC_SECRET` | backend-api internal auth | Copy the secret paired with `BACKEND_BOT_KEY_ID` at key creation/rotation time. |
+| `BACKEND_INTERNAL_SIGNING_KEY` | backend-api internal auth | Copy the Ed25519 private key paired with `BACKEND_BOT_KEY_ID` at provisioning time. |
 
 Optional:
 
@@ -54,7 +54,7 @@ Provisioning helper:
 - `deploy/scripts/provision-service-bot-key.sh`
 - Generates/rotates `service_bot_keys` row and prints:
   - `BACKEND_BOT_KEY_ID`
-  - `BACKEND_INTERNAL_HMAC_SECRET`
+  - `BACKEND_INTERNAL_SIGNING_KEY`
   - `BACKEND_SERVICE_TOKEN` placeholder
 
 Example:
@@ -123,7 +123,7 @@ GITHUB_APP_ID=...
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
 BACKEND_BASE_URL=https://sitg.io
 BACKEND_BOT_KEY_ID=bck_live_...
-BACKEND_INTERNAL_HMAC_SECRET=...
+BACKEND_INTERNAL_SIGNING_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
 OUTBOX_POLLING_ENABLED=true
 OUTBOX_POLL_INTERVAL_MS=5000
 OUTBOX_CLAIM_LIMIT=50
@@ -201,5 +201,5 @@ Then rollout to remaining instances.
 ## 10. Incident Notes
 
 - If webhook delivery failures spike: verify LB route and `GITHUB_WEBHOOK_SECRET`.
-- If all outbox actions fail auth: verify `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_HMAC_SECRET`.
+- If all outbox actions fail auth: verify `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_SIGNING_KEY`.
 - If GitHub API failures spike: inspect installation token mint path and GitHub status.

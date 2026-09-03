@@ -1,4 +1,4 @@
-import { createHash, createHmac, createSign, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, createSign, sign, timingSafeEqual } from "node:crypto";
 
 const toBase64Url = (raw: string | Buffer): string =>
   Buffer.from(raw)
@@ -46,9 +46,23 @@ export const verifyGitHubWebhookSignature = (
   return timingSafeEqual(expectedBuf, providedBuf);
 };
 
-export const buildInternalHmacSignature = (secret: string, unixTimestampSeconds: number, message: string): string => {
-  const derivedKey = createHash("sha256").update(secret).digest();
-  const payload = `${unixTimestampSeconds}.${message}`;
-  const digest = createHmac("sha256", derivedKey).update(payload).digest("hex");
-  return `sha256=${digest}`;
+export const buildInternalSigningPayload = (
+  unixTimestampSeconds: number,
+  requestNonce: string,
+  message: string,
+  body: string | Buffer,
+): Buffer => {
+  const bodyHash = createHash("sha256").update(body).digest("hex");
+  return Buffer.from(`${unixTimestampSeconds}.${requestNonce}.${message}.${bodyHash}`);
+};
+
+export const buildInternalEd25519Signature = (
+  privateKeyPem: string,
+  unixTimestampSeconds: number,
+  requestNonce: string,
+  message: string,
+  body: string | Buffer,
+): string => {
+  const payload = buildInternalSigningPayload(unixTimestampSeconds, requestNonce, message, body);
+  return `ed25519=${sign(null, payload, privateKeyPem).toString("hex")}`;
 };

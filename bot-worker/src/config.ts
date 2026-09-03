@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
+
 const must = (value: string | undefined, name: string): string => {
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
@@ -12,7 +15,7 @@ export type AppConfig = {
   backendBaseUrl: string;
   backendServiceToken?: string;
   backendBotKeyId: string;
-  backendInternalHmacSecret: string;
+  backendInternalSigningKey: string;
   githubAppId: string;
   githubAppPrivateKey: string;
   workerId: string;
@@ -47,13 +50,13 @@ export const readConfig = (): AppConfig => {
     backendBaseUrl: must(process.env.BACKEND_BASE_URL, "BACKEND_BASE_URL").replace(/\/+$/, ""),
     backendServiceToken: process.env.BACKEND_SERVICE_TOKEN,
     backendBotKeyId: must(process.env.BACKEND_BOT_KEY_ID, "BACKEND_BOT_KEY_ID"),
-    backendInternalHmacSecret: must(
-      process.env.BACKEND_INTERNAL_HMAC_SECRET ?? process.env.BACKEND_SERVICE_TOKEN,
-      "BACKEND_INTERNAL_HMAC_SECRET",
-    ),
+    backendInternalSigningKey: must(
+      process.env.BACKEND_INTERNAL_SIGNING_KEY,
+      "BACKEND_INTERNAL_SIGNING_KEY",
+    ).replace(/\\n/g, "\n"),
     githubAppId: must(process.env.GITHUB_APP_ID, "GITHUB_APP_ID"),
     githubAppPrivateKey: must(process.env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY").replace(/\\n/g, "\n"),
-    workerId: process.env.WORKER_ID ?? `bot-worker-${process.pid}`,
+    workerId: process.env.WORKER_ID ?? `bot-worker-${hostname()}-${process.pid}-${randomUUID()}`,
     outboxPollingEnabled: process.env.OUTBOX_POLLING_ENABLED !== "false",
     outboxPollIntervalMs,
     outboxClaimLimit,

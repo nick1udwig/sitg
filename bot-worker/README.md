@@ -10,7 +10,7 @@ Canonical interface contract: `docs/14-centralized-bot-interfaces.md`
 - `POST /webhooks/github`:
   - Verifies GitHub webhook signature (`X-Hub-Signature-256`).
   - Handles events:
-    - `pull_request` actions: `opened`, `reopened`, `synchronize`
+    - `pull_request` actions: `opened`, `reopened`, `ready_for_review`, `synchronize`
     - `installation` actions: `created`, `deleted`, `suspend`, `unsuspend`
     - `installation_repositories` actions: `added`, `removed`
   - Forwards normalized payloads to backend:
@@ -43,7 +43,7 @@ Canonical interface contract: `docs/14-centralized-bot-interfaces.md`
    - `GITHUB_APP_PRIVATE_KEY`
    - `BACKEND_BASE_URL`
    - `BACKEND_BOT_KEY_ID`
-   - `BACKEND_INTERNAL_HMAC_SECRET`
+   - `BACKEND_INTERNAL_SIGNING_KEY`
    - Optional: `BACKEND_SERVICE_TOKEN`
    - Optional: `GITHUB_API_BASE_URL` (for local mock API)
    - Optional: `WORKER_ID`

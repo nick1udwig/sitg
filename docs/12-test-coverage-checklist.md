@@ -9,7 +9,7 @@ This checklist tracks what is currently covered by automated tests and what is s
   - `internal_deadline_check` close path (`CLOSE_PR`) and whitelist no-op path (`NOOP` + status transition to `EXEMPT`).
   - `internal_bot_actions_claim` happy path (bot outbox polling).
   - `internal_bot_action_result` done path (bot ack), retryable path (`PENDING`), failed path (`FAILED`), and conflict path (`BOT_ACTION_NOT_CLAIMED_BY_WORKER`).
-  - Internal replay protection (`internal_request_replays`) duplicate-signature rejection (`403`).
+  - Internal replay protection (`internal_request_replays`) duplicate-nonce rejection.
   - Gate APIs: `GET /api/v1/gate/{token}`, typed data fetch, and confirm signature flow to `VERIFIED`.
   - Wallet APIs: link challenge, link confirm (personal sign), unlink conflict while stake is present, unlink success after stake removal.
   - Session behavior: `/api/v1/me` unauthenticated and authenticated.
@@ -19,7 +19,7 @@ This checklist tracks what is currently covered by automated tests and what is s
   - `REQUIRE_STAKE` decision handling and gate comment upsert.
   - Outbox polling, claim, execute close, and result ack.
   - Deadline recovery from persisted state and direct deadline-run endpoint auth rejection.
-  - HMAC internal signing logic for backend calls.
+  - Ed25519 internal signing, body binding, and fresh retry nonces for backend calls.
 
 - Smart contract:
   - Stake, lock reset behavior, unlock boundary checks.

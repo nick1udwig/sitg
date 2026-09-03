@@ -3,7 +3,7 @@ set -euo pipefail
 
 DATABASE_URL_VALUE="${DATABASE_URL:-}"
 KEY_ID=""
-RAW_SECRET=""
+PRIVATE_KEY_FILE=""
 ONLY_PRINT="false"
 
 usage() {
@@ -12,12 +12,13 @@ Usage:
   provision-service-bot-key.sh [options]
 
 Creates or rotates a centralized bot service key in backend-api table `service_bot_keys`.
-Prints `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_HMAC_SECRET` for bot-worker env.
+Prints `BACKEND_BOT_KEY_ID` and `BACKEND_INTERNAL_SIGNING_KEY` for bot-worker env.
 
 Options:
   --database-url <url>   Postgres connection URL (default: $DATABASE_URL)
   --key-id <id>          Key id to create/rotate (default: generated bck_live_<hex>)
-  --secret <secret>      Raw secret to use (default: generated random secret)
+  --private-key-file <path>
+                         Existing Ed25519 private key PEM (default: generate a new key)
   --only-print           Do not write to DB; only print generated env values
   -h, --help             Show this help
 
@@ -37,25 +38,8 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
 }
 
-sha256_hex() {
-  local value="$1"
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$value" | sha256sum | awk '{print $1}'
-    return
-  fi
-  if command -v shasum >/dev/null 2>&1; then
-    printf '%s' "$value" | shasum -a 256 | awk '{print $1}'
-    return
-  fi
-  fail "Missing required command: sha256sum (or shasum)"
-}
-
 generate_key_id() {
   printf 'bck_live_%s' "$(openssl rand -hex 8)"
-}
-
-generate_secret() {
-  openssl rand -base64 48 | tr -d '\n'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -68,8 +52,8 @@ while [[ $# -gt 0 ]]; do
       KEY_ID="${2:-}"
       shift 2
       ;;
-    --secret)
-      RAW_SECRET="${2:-}"
+    --private-key-file)
+      PRIVATE_KEY_FILE="${2:-}"
       shift 2
       ;;
     --only-print)
@@ -91,14 +75,18 @@ require_cmd openssl
 if [[ -z "$KEY_ID" ]]; then
   KEY_ID="$(generate_key_id)"
 fi
-if [[ -z "$RAW_SECRET" ]]; then
-  RAW_SECRET="$(generate_secret)"
+if [[ -n "$PRIVATE_KEY_FILE" ]]; then
+  [[ -f "$PRIVATE_KEY_FILE" ]] || fail "Private key file does not exist: $PRIVATE_KEY_FILE"
+  PRIVATE_KEY_PEM="$(<"$PRIVATE_KEY_FILE")"
+else
+  PRIVATE_KEY_PEM="$(openssl genpkey -algorithm ED25519 2>/dev/null)"
 fi
 
 [[ "$KEY_ID" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || fail "--key-id must be 8-128 chars from [A-Za-z0-9._:-]"
-[[ -n "$RAW_SECRET" ]] || fail "Secret must not be empty"
+[[ -n "$PRIVATE_KEY_PEM" ]] || fail "Private key must not be empty"
 
-SECRET_HASH="sha256:$(sha256_hex "$RAW_SECRET")"
+PUBLIC_KEY_BASE64="$(printf '%s\n' "$PRIVATE_KEY_PEM" | openssl pkey -pubout -outform DER 2>/dev/null | openssl base64 -A)"
+[[ -n "$PUBLIC_KEY_BASE64" ]] || fail "Unable to derive Ed25519 public key"
 
 if [[ "$ONLY_PRINT" != "true" ]]; then
   require_cmd psql
@@ -107,11 +95,12 @@ if [[ "$ONLY_PRINT" != "true" ]]; then
   psql "$DATABASE_URL_VALUE" \
     --set=ON_ERROR_STOP=1 \
     --set=key_id="$KEY_ID" \
-    --set=secret_hash="$SECRET_HASH" <<'SQL' >/dev/null
-insert into service_bot_keys (key_id, secret_hash, active, revoked_at, created_at)
-values (:'key_id', :'secret_hash', true, null, now())
+    --set=public_key="$PUBLIC_KEY_BASE64" <<'SQL' >/dev/null
+insert into service_bot_keys (key_id, public_key, secret_hash, active, revoked_at, created_at)
+values (:'key_id', :'public_key', null, true, null, now())
 on conflict (key_id) do update set
-  secret_hash = excluded.secret_hash,
+  public_key = excluded.public_key,
+  secret_hash = null,
   active = true,
   revoked_at = null;
 SQL
@@ -121,10 +110,11 @@ else
   printf '[bot-key] --only-print enabled; no DB write performed\n' >&2
 fi
 
+PRIVATE_KEY_ESCAPED="${PRIVATE_KEY_PEM//$'\n'/\\n}"
 cat <<EOF2
 # Set these in bot-worker env
 BACKEND_BOT_KEY_ID=$KEY_ID
-BACKEND_INTERNAL_HMAC_SECRET=$RAW_SECRET
+BACKEND_INTERNAL_SIGNING_KEY="$PRIVATE_KEY_ESCAPED"
 
 # Optional. Keep empty unless your ingress/proxy enforces bearer auth for internal bot calls.
 BACKEND_SERVICE_TOKEN=
