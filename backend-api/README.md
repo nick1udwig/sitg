@@ -66,6 +66,14 @@ cargo run
 cargo test
 ```
 
+The Postgres integration tests are ignored by default. Run them explicitly against a
+reachable test database; each test creates and removes its own isolated schema:
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@localhost:55432/sitg \
+  cargo test --test db_integration -- --ignored
+```
+
 ## Internal Endpoint Auth
 
 Internal endpoints require:

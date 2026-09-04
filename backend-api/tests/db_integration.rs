@@ -1,73 +1,83 @@
 use chrono::{Duration, Utc};
-use sqlx::{Executor, PgPool};
+use sqlx::{
+    postgres::{PgConnectOptions, PgPoolOptions},
+    PgPool,
+};
+use std::{str::FromStr, sync::OnceLock, time::Duration as StdDuration};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
-async fn maybe_pool() -> Option<PgPool> {
-    let Ok(url) = std::env::var("DATABASE_URL") else {
-        return None;
-    };
-    PgPool::connect(&url).await.ok()
+struct TestDatabase {
+    pool: PgPool,
+    admin_pool: PgPool,
+    schema: String,
 }
 
-async fn apply_migrations(pool: &PgPool) {
-    pool.execute(include_str!("../migrations/0001_init.sql"))
-        .await
-        .expect("apply 0001");
-    pool.execute(include_str!("../migrations/0002_auth_wallet.sql"))
-        .await
-        .expect("apply 0002");
-    pool.execute(include_str!(
-        "../migrations/0003_internal_replay_and_outbox.sql"
-    ))
-    .await
-    .expect("apply 0003");
-    pool.execute(include_str!("../migrations/0004_bot_action_results.sql"))
-        .await
-        .expect("apply 0004");
-    pool.execute(include_str!("../migrations/0005_bot_tenant_auth.sql"))
-        .await
-        .expect("apply 0005");
-    pool.execute(include_str!(
-        "../migrations/0006_user_sessions_github_access_token.sql"
-    ))
-    .await
-    .expect("apply 0006");
-    pool.execute(include_str!("../migrations/0007_centralized_bot_reset.sql"))
-        .await
-        .expect("apply 0007");
-    pool.execute(include_str!("../migrations/0008_bot_action_reliability.sql"))
-        .await
-        .expect("apply 0008");
-    pool.execute(include_str!("../migrations/0009_internal_request_signatures.sql"))
-        .await
-        .expect("apply 0009");
-    pool.execute(include_str!("../migrations/0010_quote_cache_lookup.sql"))
-        .await
-        .expect("apply 0010");
-    pool.execute(include_str!(
-        "../migrations/0011_pending_challenge_deadlines.sql"
-    ))
-    .await
-    .expect("apply 0011");
-    pool.execute(include_str!(
-        "../migrations/0012_retention_cleanup_indexes.sql"
-    ))
-    .await
-    .expect("apply 0012");
-    pool.execute(include_str!(
-        "../migrations/0013_protect_session_tokens.sql"
-    ))
-    .await
-    .expect("apply 0013");
+fn setup_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+impl TestDatabase {
+    async fn provision() -> Self {
+        let database_url = std::env::var("DATABASE_URL").expect(
+            "DATABASE_URL must be set when explicitly running ignored Postgres integration tests",
+        );
+        let admin_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(StdDuration::from_secs(5))
+            .connect(&database_url)
+            .await
+            .unwrap_or_else(|error| panic!("connect to Postgres from DATABASE_URL: {error}"));
+
+        let _setup_guard = setup_lock().lock().await;
+        sqlx::query(r#"create extension if not exists "pgcrypto" with schema public"#)
+            .execute(&admin_pool)
+            .await
+            .expect("install pgcrypto in public schema");
+
+        let schema = format!("sitg_test_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"create schema "{schema}""#))
+            .execute(&admin_pool)
+            .await
+            .expect("create isolated test schema");
+
+        let connect_options = PgConnectOptions::from_str(&database_url)
+            .expect("DATABASE_URL must be a valid Postgres URL")
+            .options([("search_path", format!("{schema},public"))]);
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(StdDuration::from_secs(5))
+            .connect_with(connect_options)
+            .await
+            .expect("connect to isolated test schema");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("apply migrations to isolated test schema");
+
+        Self {
+            pool,
+            admin_pool,
+            schema,
+        }
+    }
+
+    async fn cleanup(self) {
+        self.pool.close().await;
+        sqlx::query(&format!(r#"drop schema "{}" cascade"#, self.schema))
+            .execute(&self.admin_pool)
+            .await
+            .expect("drop isolated test schema");
+        self.admin_pool.close().await;
+    }
 }
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL postgres"]
 async fn replay_nonce_is_unique_per_key() {
-    let Some(pool) = maybe_pool().await else {
-        return;
-    };
-    apply_migrations(&pool).await;
+    let database = TestDatabase::provision().await;
+    let pool = database.pool.clone();
 
     let request_nonce = Uuid::new_v4();
     sqlx::query(
@@ -92,15 +102,14 @@ async fn replay_nonce_is_unique_per_key() {
     .await;
 
     assert!(second.is_err(), "duplicate request nonce should fail");
+    database.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL postgres"]
 async fn github_delivery_is_unique_by_event_name() {
-    let Some(pool) = maybe_pool().await else {
-        return;
-    };
-    apply_migrations(&pool).await;
+    let database = TestDatabase::provision().await;
+    let pool = database.pool.clone();
 
     let delivery = format!("delivery-{}", Uuid::new_v4());
     sqlx::query(
@@ -126,15 +135,14 @@ async fn github_delivery_is_unique_by_event_name() {
     .execute(&pool)
     .await
     .expect("same delivery id with different event is allowed");
+    database.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL postgres"]
 async fn bot_actions_pending_unique_for_challenge() {
-    let Some(pool) = maybe_pool().await else {
-        return;
-    };
-    apply_migrations(&pool).await;
+    let database = TestDatabase::provision().await;
+    let pool = database.pool.clone();
 
     sqlx::query(
         "insert into github_installations (installation_id, account_login, account_type, active, created_at, updated_at) values (1, 'org', 'Organization', true, now(), now()) on conflict (installation_id) do nothing",
@@ -180,15 +188,14 @@ async fn bot_actions_pending_unique_for_challenge() {
         second.is_err(),
         "duplicate pending close action should fail"
     );
+    database.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL postgres"]
 async fn bot_action_claim_and_result_v2_lifecycle() {
-    let Some(pool) = maybe_pool().await else {
-        return;
-    };
-    apply_migrations(&pool).await;
+    let database = TestDatabase::provision().await;
+    let pool = database.pool.clone();
 
     sqlx::query(
         "insert into github_installations (installation_id, account_login, account_type, active, created_at, updated_at) values (9, 'org9', 'Organization', true, now(), now()) on conflict (installation_id) do nothing",
@@ -243,15 +250,14 @@ async fn bot_action_claim_and_result_v2_lifecycle() {
         .await
         .expect("get status");
     assert_eq!(status, "DONE");
+    database.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL postgres"]
 async fn bot_action_claim_reclaims_expired_leases_and_respects_backoff() {
-    let Some(pool) = maybe_pool().await else {
-        return;
-    };
-    apply_migrations(&pool).await;
+    let database = TestDatabase::provision().await;
+    let pool = database.pool.clone();
 
     let installation_id = 90_001_i64;
     sqlx::query(
@@ -281,18 +287,8 @@ async fn bot_action_claim_reclaims_expired_leases_and_respects_backoff() {
             now,
         ),
         (fresh_claim, "CLAIMED", Some(now), now),
-        (
-            ready_pending,
-            "PENDING",
-            None,
-            now - Duration::minutes(1),
-        ),
-        (
-            delayed_pending,
-            "PENDING",
-            None,
-            now + Duration::hours(1),
-        ),
+        (ready_pending, "PENDING", None, now - Duration::minutes(1)),
+        (delayed_pending, "PENDING", None, now + Duration::hours(1)),
     ] {
         sqlx::query(
             r#"
@@ -349,4 +345,5 @@ async fn bot_action_claim_reclaims_expired_leases_and_respects_backoff() {
     assert!(claimed.contains(&ready_pending));
     assert!(!claimed.contains(&fresh_claim));
     assert!(!claimed.contains(&delayed_pending));
+    database.cleanup().await;
 }
