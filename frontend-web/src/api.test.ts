@@ -38,6 +38,18 @@ describe('api client', () => {
     expect(me).toBeNull();
   });
 
+  it('surfaces me endpoint failures instead of treating them as signed out', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      mockJsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'database unavailable' } })
+    );
+
+    await expect(getMe()).rejects.toMatchObject({
+      status: 500,
+      code: 'INTERNAL_ERROR',
+      message: 'database unavailable'
+    });
+  });
+
   it('sends wallet link confirm payload', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')

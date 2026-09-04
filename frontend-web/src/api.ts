@@ -90,8 +90,11 @@ async function requestOptional<T>(path: string, init?: RequestInit): Promise<T |
 export async function getMe(): Promise<MeResponse | null> {
   try {
     return await request<MeResponse>('/api/v1/me');
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as ApiError).status === 401) {
+      return null;
+    }
+    throw error;
   }
 }
 
