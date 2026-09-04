@@ -354,6 +354,7 @@ async fn get_repo_github_app_status(
     if !repo.can_write {
         return Err(ApiError::Forbidden);
     }
+    sync_repo_full_name(&state.pool, repo_id, &repo.full_name, Utc::now()).await?;
 
     let row: Option<(i64, String, String, bool)> = sqlx::query_as(
         r#"
@@ -435,33 +436,23 @@ async fn put_repo_config(
         return Err(ApiError::validation("input_value must be > 0"));
     }
 
-    let existing: Option<String> =
-        sqlx::query_scalar("select full_name from repo_configs where github_repo_id = $1")
-            .bind(repo_id)
-            .fetch_optional(&state.pool)
-            .await?;
+    let existing: bool = sqlx::query_scalar(
+        "select exists(select 1 from repo_configs where github_repo_id = $1)",
+    )
+    .bind(repo_id)
+    .fetch_one(&state.pool)
+    .await?;
 
-    let (full_name, created) = if let Some(full_name) = existing {
-        let has_access = state
-            .github_oauth_service
-            .has_repo_write_access(token, &full_name, &user.github_login)
-            .await?;
-        if !has_access {
-            return Err(ApiError::Forbidden);
-        }
-        (full_name, false)
-    } else {
-        let repo = state
-            .github_oauth_service
-            .lookup_repo_by_id(token, repo_id)
-            .await?
-            .ok_or(ApiError::NotFound)?;
-        if !repo.can_write {
-            return Err(ApiError::Forbidden);
-        }
-
-        (repo.full_name, true)
-    };
+    let repo = state
+        .github_oauth_service
+        .lookup_repo_by_id(token, repo_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if !repo.can_write {
+        return Err(ApiError::Forbidden);
+    }
+    let full_name = repo.full_name;
+    let created = !existing;
 
     let installation_id = require_active_repo_installation(&state, repo_id).await?;
     let quote = state.quote_service.live_or_cached_eth_usd_quote().await?;
@@ -508,6 +499,7 @@ async fn put_repo_config(
     .bind(now)
     .execute(&state.pool)
     .await?;
+    sync_repo_full_name(&state.pool, repo_id, &full_name, now).await?;
 
     insert_audit(
         &state,
@@ -2081,25 +2073,72 @@ async fn require_repo_owner(
     repo_id: i64,
 ) -> ApiResult<CurrentUserRow> {
     let user = require_current_user(state, jar).await?;
-    let full_name: Option<String> =
-        sqlx::query_scalar("select full_name from repo_configs where github_repo_id = $1")
-            .bind(repo_id)
-            .fetch_optional(&state.pool)
-            .await?;
-    let full_name = full_name.ok_or(ApiError::NotFound)?;
+    let configured: bool = sqlx::query_scalar(
+        "select exists(select 1 from repo_configs where github_repo_id = $1)",
+    )
+    .bind(repo_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !configured {
+        return Err(ApiError::NotFound);
+    }
     let token = user
         .github_access_token
         .as_deref()
         .ok_or(ApiError::Unauthenticated)?;
 
-    let has_access = state
+    let repo = state
         .github_oauth_service
-        .has_repo_write_access(token, &full_name, &user.github_login)
-        .await?;
-    if !has_access {
+        .lookup_repo_by_id(token, repo_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if !repo.can_write {
         return Err(ApiError::Forbidden);
     }
+    sync_repo_full_name(&state.pool, repo_id, &repo.full_name, Utc::now()).await?;
     Ok(user)
+}
+
+async fn sync_repo_full_name<'e, E>(
+    executor: E,
+    repo_id: i64,
+    full_name: &str,
+    updated_at: chrono::DateTime<Utc>,
+) -> ApiResult<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query(
+        r#"
+        with updated_configs as (
+          update repo_configs
+          set full_name = $2, updated_at = $3
+          where github_repo_id = $1 and full_name is distinct from $2
+        ), updated_installation_repositories as (
+          update github_installation_repositories
+          set full_name = $2, updated_at = $3
+          where github_repo_id = $1 and full_name is distinct from $2
+        ), updated_challenges as (
+          update pr_challenges
+          set github_repo_full_name = $2, updated_at = $3
+          where github_repo_id = $1
+            and status in ('PENDING', 'VERIFIED', 'EXEMPT')
+            and github_repo_full_name is distinct from $2
+        )
+        update bot_actions
+        set repo_full_name = $2, updated_at = $3
+        where github_repo_id = $1
+          and status in ('PENDING', 'CLAIMED')
+          and repo_full_name is distinct from $2
+        "#,
+    )
+    .bind(repo_id)
+    .bind(full_name)
+    .bind(updated_at)
+    .execute(executor)
+    .await?;
+
+    Ok(())
 }
 
 async fn require_active_repo_installation(state: &AppState, repo_id: i64) -> ApiResult<i64> {
@@ -2780,6 +2819,164 @@ mod tests {
             .execute(&pool)
             .await
             .expect("clean user");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable DATABASE_URL postgres"]
+    async fn canonical_repo_name_sync_updates_active_work() {
+        let database_url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL must be set for the route integration test");
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("connect to route test database");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("apply migrations");
+
+        let repo_id = 8_200_000_000_i64 + i64::from(rand::random::<u32>());
+        let installation_id = repo_id + 10_000_000_000_i64;
+        let challenge_id = Uuid::new_v4();
+        let now = truncate_to_micros(Utc::now());
+        let old_name = format!("old-owner/repo-{repo_id}");
+        let new_name = format!("new-owner/repo-{repo_id}");
+
+        sqlx::query(
+            "insert into github_installations (installation_id, account_login, account_type, active, suspended_at, deleted_at, created_at, updated_at) values ($1, 'owner', 'User', true, null, null, $2, $2)",
+        )
+        .bind(installation_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert installation");
+        sqlx::query(
+            "insert into github_installation_repositories (installation_id, github_repo_id, full_name, active, created_at, updated_at) values ($1, $2, $3, true, $4, $4)",
+        )
+        .bind(installation_id)
+        .bind(repo_id)
+        .bind(&old_name)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert installation repository");
+        sqlx::query(
+            r#"
+            insert into repo_configs (
+              github_repo_id, installation_id, full_name, draft_prs_gated, threshold_wei,
+              input_mode, input_value, spot_price_usd, spot_source, spot_at, spot_quote_id,
+              spot_from_cache, created_at, updated_at
+            ) values ($1, $2, $3, true, 1, 'ETH', 1, 1000, 'test', $4, null, false, $4, $4)
+            "#,
+        )
+        .bind(repo_id)
+        .bind(installation_id)
+        .bind(&old_name)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert repo config");
+        sqlx::query(
+            r#"
+            insert into pr_challenges (
+              id, gate_token, github_repo_id, github_repo_full_name, github_pr_number,
+              github_pr_author_id, github_pr_author_login, head_sha, threshold_wei_snapshot,
+              draft_at_creation, deadline_at, status, verified_wallet_address, created_at, updated_at
+            ) values ($1, $2, $3, $4, 1, 10, 'author', $5, 1, false, $6, 'PENDING', null, $7, $7)
+            "#,
+        )
+        .bind(challenge_id)
+        .bind(format!("rename-test-{}", Uuid::new_v4()))
+        .bind(repo_id)
+        .bind(&old_name)
+        .bind("a".repeat(40))
+        .bind(now + Duration::minutes(30))
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert challenge");
+        sqlx::query(
+            r#"
+            insert into bot_actions (
+              id, action_type, challenge_id, installation_id, github_repo_id, repo_full_name,
+              github_pr_number, payload, status, claimed_at, completed_at, created_at, updated_at
+            ) values ($1, 'UPSERT_PR_COMMENT', $2, $3, $4, $5, 1, '{}', 'PENDING', null, null, $6, $6)
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(challenge_id)
+        .bind(installation_id)
+        .bind(repo_id)
+        .bind(&old_name)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert bot action");
+
+        sync_repo_full_name(&pool, repo_id, &new_name, now + Duration::seconds(1))
+            .await
+            .expect("sync canonical repository name");
+
+        let config_name: String = sqlx::query_scalar(
+            "select full_name from repo_configs where github_repo_id = $1",
+        )
+        .bind(repo_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load config name");
+        let mapping_name: String = sqlx::query_scalar(
+            "select full_name from github_installation_repositories where installation_id = $1 and github_repo_id = $2",
+        )
+        .bind(installation_id)
+        .bind(repo_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load mapping name");
+        let challenge_name: String = sqlx::query_scalar(
+            "select github_repo_full_name from pr_challenges where id = $1",
+        )
+        .bind(challenge_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load challenge name");
+        let action_name: String =
+            sqlx::query_scalar("select repo_full_name from bot_actions where challenge_id = $1")
+                .bind(challenge_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load action name");
+        assert_eq!(
+            [config_name, mapping_name, challenge_name, action_name],
+            [new_name.clone(), new_name.clone(), new_name.clone(), new_name]
+        );
+
+        sqlx::query("delete from bot_actions where challenge_id = $1")
+            .bind(challenge_id)
+            .execute(&pool)
+            .await
+            .expect("clean bot action");
+        sqlx::query("delete from pr_challenges where id = $1")
+            .bind(challenge_id)
+            .execute(&pool)
+            .await
+            .expect("clean challenge");
+        sqlx::query("delete from repo_configs where github_repo_id = $1")
+            .bind(repo_id)
+            .execute(&pool)
+            .await
+            .expect("clean config");
+        sqlx::query(
+            "delete from github_installation_repositories where installation_id = $1 and github_repo_id = $2",
+        )
+        .bind(installation_id)
+        .bind(repo_id)
+        .execute(&pool)
+        .await
+        .expect("clean installation repository");
+        sqlx::query("delete from github_installations where installation_id = $1")
+            .bind(installation_id)
+            .execute(&pool)
+            .await
+            .expect("clean installation");
     }
 
     #[test]

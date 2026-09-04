@@ -56,11 +56,6 @@ pub struct GithubRepoLookup {
     pub can_write: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct GithubPermissionResponse {
-    permission: String,
-}
-
 impl GithubOAuthService {
     fn http_client() -> reqwest::Client {
         reqwest::Client::builder()
@@ -231,48 +226,6 @@ impl GithubOAuthService {
             .into_iter()
             .map(|(_, login, user)| (login, user))
             .collect())
-    }
-
-    pub async fn has_repo_write_access(
-        &self,
-        token: &str,
-        full_repo_name: &str,
-        login: &str,
-    ) -> ApiResult<bool> {
-        let response = self
-            .client
-            .get(format!(
-                "{}/repos/{full_repo_name}/collaborators/{}/permission",
-                self.api_base_url,
-                urlencoding::encode(login)
-            ))
-            .bearer_auth(token)
-            .header("User-Agent", "sitg-backend")
-            .send()
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
-
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(false);
-        }
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ApiError::Unauthenticated);
-        }
-        if !response.status().is_success() {
-            return Err(ApiError::validation(
-                "GitHub permission lookup failed for repo owner check",
-            ));
-        }
-
-        let payload = response
-            .json::<GithubPermissionResponse>()
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
-
-        Ok(matches!(
-            payload.permission.as_str(),
-            "admin" | "maintain" | "write"
-        ))
     }
 
     pub async fn list_writable_repos(&self, token: &str) -> ApiResult<Vec<GithubRepoOption>> {
@@ -450,6 +403,43 @@ mod tests {
         ));
         assert!(url.contains("scope=read%3Auser%20public_repo"));
         assert!(url.ends_with("&state=state-123"));
+    }
+
+    #[tokio::test]
+    async fn looks_up_renamed_repository_by_immutable_id() {
+        let app = Router::new().route(
+            "/repositories/{repo_id}",
+            get(|Path(repo_id): Path<i64>, headers: HeaderMap| async move {
+                if headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    != Some("Bearer owner-token")
+                {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                Json(serde_json::json!({
+                    "id": repo_id,
+                    "full_name": "new-owner/renamed-repo",
+                    "permissions": { "push": true }
+                }))
+                .into_response()
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let repository = GithubOAuthService::with_api_base_url(format!("http://{addr}"))
+            .lookup_repo_by_id("owner-token", 999)
+            .await
+            .expect("lookup repository")
+            .expect("repository exists");
+
+        assert_eq!(repository.full_name, "new-owner/renamed-repo");
+        assert!(repository.can_write);
     }
 
     #[tokio::test]
