@@ -58,6 +58,7 @@ Tenant authorization rules:
 
 ### Repo owner config
 
+- `GET /api/v1/repos` (returns all writable repositories across GitHub result pages)
 - `GET /api/v1/repos/{repo_id}/config`
 
 - `PUT /api/v1/repos/{repo_id}/config`
@@ -112,6 +113,8 @@ Response:
 ### Whitelist
 
 - `POST /api/v1/repos/{repo_id}/whitelist/resolve-logins`
+
+Uses the owner's GitHub token and resolves up to 100 unique logins per request with bounded concurrency.
 
 Request:
 ```json

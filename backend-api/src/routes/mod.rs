@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -51,6 +51,7 @@ const BOT_ACTION_CLAIM_LEASE_SECONDS: i64 = 5 * 60;
 const BOT_ACTION_MAX_ATTEMPTS: i32 = 8;
 const BOT_ACTION_RETRY_BASE_SECONDS: i64 = 5;
 const BOT_ACTION_RETRY_MAX_SECONDS: i64 = 15 * 60;
+const MAX_WHITELIST_LOGIN_LOOKUPS: usize = 100;
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -545,7 +546,7 @@ async fn resolve_logins(
     jar: CookieJar,
     Json(payload): Json<ResolveLoginsRequest>,
 ) -> ApiResult<Json<ResolveLoginsResponse>> {
-    require_repo_owner(&state, &jar, repo_id).await?;
+    let owner = require_repo_owner(&state, &jar, repo_id).await?;
     require_active_repo_installation(&state, repo_id).await?;
 
     if payload.logins.is_empty() {
@@ -554,17 +555,26 @@ async fn resolve_logins(
             unresolved: vec![],
         }));
     }
+    let token = owner
+        .github_access_token
+        .as_deref()
+        .ok_or(ApiError::Unauthenticated)?;
+    let logins = normalize_whitelist_logins(payload.logins)?;
 
+    let lookups = state
+        .github_oauth_service
+        .resolve_logins(token, logins)
+        .await?;
     let mut resolved = Vec::new();
     let mut unresolved = Vec::new();
 
-    for login in payload.logins {
-        match state.github_oauth_service.resolve_login(&login).await? {
+    for (requested_login, user) in lookups {
+        match user {
             Some(user) => resolved.push(ResolvedLogin {
                 github_user_id: user.id,
                 github_login: user.login,
             }),
-            None => unresolved.push(login),
+            None => unresolved.push(requested_login),
         }
     }
 
@@ -572,6 +582,27 @@ async fn resolve_logins(
         resolved,
         unresolved,
     }))
+}
+
+fn normalize_whitelist_logins(raw_logins: Vec<String>) -> ApiResult<Vec<String>> {
+    if raw_logins.len() > MAX_WHITELIST_LOGIN_LOOKUPS {
+        return Err(ApiError::validation(format!(
+            "at most {MAX_WHITELIST_LOGIN_LOOKUPS} logins may be resolved at once"
+        )));
+    }
+
+    let mut seen = HashSet::new();
+    let mut logins = Vec::new();
+    for raw_login in raw_logins {
+        let login = raw_login.trim().to_string();
+        if login.is_empty() {
+            return Err(ApiError::validation("logins must not be empty"));
+        }
+        if seen.insert(login.to_lowercase()) {
+            logins.push(login);
+        }
+    }
+    Ok(logins)
 }
 
 async fn put_whitelist(
@@ -2377,6 +2408,27 @@ mod tests {
     fn rejects_invalid_wallet_address() {
         let err = normalize_wallet_address("0x123").expect_err("should reject invalid");
         assert!(matches!(err, ApiError::Validation(_)));
+    }
+
+    #[test]
+    fn normalizes_and_deduplicates_whitelist_logins() {
+        let logins = normalize_whitelist_logins(vec![
+            " Alice ".to_string(),
+            "alice".to_string(),
+            "BOB".to_string(),
+        ])
+        .expect("valid logins");
+        assert_eq!(logins, ["Alice", "BOB"]);
+
+        let empty = normalize_whitelist_logins(vec!["  ".to_string()]);
+        assert!(matches!(empty, Err(ApiError::Validation(_))));
+
+        let too_many = normalize_whitelist_logins(
+            (0..=MAX_WHITELIST_LOGIN_LOOKUPS)
+                .map(|index| format!("user-{index}"))
+                .collect(),
+        );
+        assert!(matches!(too_many, Err(ApiError::Validation(_))));
     }
 
     #[tokio::test]
