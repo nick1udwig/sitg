@@ -110,6 +110,7 @@ Indexes/constraints:
 
 Indexes/constraints:
 - Unique active challenge per PR: partial unique on `(github_repo_id, github_pr_number)` where `status in ('PENDING','VERIFIED','EXEMPT')`.
+- `(deadline_at, id)` where `status = 'PENDING'` for concurrent deadline sweeps.
 
 ### `challenge_nonces`
 

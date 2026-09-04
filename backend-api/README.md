@@ -44,6 +44,7 @@ GitHub OAuth notes:
 - `migrations/0008_bot_action_reliability.sql`
 - `migrations/0009_internal_request_signatures.sql`
 - `migrations/0010_quote_cache_lookup.sql`
+- `migrations/0011_pending_challenge_deadlines.sql`
 
 Note: service startup also runs embedded migrations automatically.
 

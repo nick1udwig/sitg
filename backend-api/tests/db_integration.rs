@@ -44,6 +44,11 @@ async fn apply_migrations(pool: &PgPool) {
     pool.execute(include_str!("../migrations/0010_quote_cache_lookup.sql"))
         .await
         .expect("apply 0010");
+    pool.execute(include_str!(
+        "../migrations/0011_pending_challenge_deadlines.sql"
+    ))
+    .await
+    .expect("apply 0011");
 }
 
 #[tokio::test]
