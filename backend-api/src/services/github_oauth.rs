@@ -1,3 +1,5 @@
+use std::time::Duration as StdDuration;
+
 use serde::Deserialize;
 
 use crate::{
@@ -63,7 +65,12 @@ impl GithubOAuthService {
 
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .user_agent("sitg-backend")
+                .connect_timeout(StdDuration::from_secs(3))
+                .timeout(StdDuration::from_secs(10))
+                .build()
+                .expect("build GitHub HTTP client"),
         }
     }
 

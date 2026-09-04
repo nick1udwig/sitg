@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration as StdDuration};
 
 use reqwest::Client;
 use serde::Deserialize;
@@ -32,7 +32,12 @@ pub struct StakeStatus {
 impl StakeService {
     pub fn new(config: &Config) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .user_agent("sitg-backend")
+                .connect_timeout(StdDuration::from_secs(3))
+                .timeout(StdDuration::from_secs(8))
+                .build()
+                .expect("build Base RPC HTTP client"),
             rpc_url: config.base_rpc_url.clone(),
             contract_address: config.staking_contract_address.clone(),
             blocked_unlink_wallets: config.blocked_unlink_wallets.clone(),
@@ -51,12 +56,10 @@ impl StakeService {
             });
         }
 
-        let balance_hex = self
-            .eth_call_address_u256("stakedBalance(address)", wallet_address)
-            .await?;
-        let unlock_hex = self
-            .eth_call_address_u256("unlockTime(address)", wallet_address)
-            .await?;
+        let (balance_hex, unlock_hex) = tokio::try_join!(
+            self.eth_call_address_u256("stakedBalance(address)", wallet_address),
+            self.eth_call_address_u256("unlockTime(address)", wallet_address),
+        )?;
 
         Ok(StakeStatus {
             balance_wei: parse_u256_hex_to_u128(&balance_hex)?,
@@ -144,6 +147,12 @@ fn parse_u256_hex_to_u64(hex_value: &str) -> ApiResult<u64> {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::{net::TcpListener, sync::Notify, time::timeout};
 
     fn test_config(blocked_unlink_wallets: Vec<String>) -> Config {
         Config {
@@ -211,5 +220,59 @@ mod tests {
             .expect("blocked wallet should short-circuit");
         assert_eq!(status.balance_wei, 1);
         assert_eq!(status.unlock_time_unix, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn fetches_balance_and_unlock_time_concurrently() {
+        let arrivals = Arc::new(AtomicUsize::new(0));
+        let both_arrived = Arc::new(Notify::new());
+        let app = Router::new().route(
+            "/",
+            post({
+                let arrivals = Arc::clone(&arrivals);
+                let both_arrived = Arc::clone(&both_arrived);
+                move || {
+                    let arrivals = Arc::clone(&arrivals);
+                    let both_arrived = Arc::clone(&both_arrived);
+                    async move {
+                        let arrival = arrivals.fetch_add(1, Ordering::SeqCst) + 1;
+                        if arrival == 1 {
+                            if timeout(StdDuration::from_millis(500), both_arrived.notified())
+                                .await
+                                .is_err()
+                            {
+                                return StatusCode::REQUEST_TIMEOUT.into_response();
+                            }
+                        } else {
+                            both_arrived.notify_waiters();
+                        }
+
+                        Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "result": "0x1"
+                        }))
+                        .into_response()
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut config = test_config(vec![]);
+        config.base_rpc_url = format!("http://{addr}");
+        let status = StakeService::new(&config)
+            .stake_status("0x1111111111111111111111111111111111111111")
+            .await
+            .expect("parallel RPC reads should succeed");
+
+        assert_eq!(arrivals.load(Ordering::SeqCst), 2);
+        assert_eq!(status.balance_wei, 1);
+        assert_eq!(status.unlock_time_unix, 1);
     }
 }

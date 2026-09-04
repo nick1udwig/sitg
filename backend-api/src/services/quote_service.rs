@@ -62,9 +62,10 @@ impl QuoteService {
     pub fn new(pool: PgPool) -> Self {
         let client = reqwest::Client::builder()
             .user_agent("sitg-backend")
+            .connect_timeout(StdDuration::from_secs(3))
             .timeout(StdDuration::from_secs(8))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("build quote HTTP client");
 
         Self {
             pool,
@@ -80,9 +81,10 @@ impl QuoteService {
     fn with_base_urls(pool: PgPool, coingecko_base_url: String, coinbase_base_url: String) -> Self {
         let client = reqwest::Client::builder()
             .user_agent("sitg-backend")
+            .connect_timeout(StdDuration::from_secs(3))
             .timeout(StdDuration::from_secs(8))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("build quote HTTP client");
 
         Self {
             pool,
