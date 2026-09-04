@@ -1,6 +1,6 @@
 import type { FormEvent } from 'react';
 import type { RepoSelection } from '../../state';
-import type { InputMode } from '../../types';
+import type { InputMode, WhitelistEntry } from '../../types';
 
 interface ConfigFormState {
   inputMode: InputMode;
@@ -15,9 +15,11 @@ interface ThresholdWhitelistTabProps {
   onConfigFormChange: (updater: (prev: ConfigFormState) => ConfigFormState) => void;
   summary: { enforcedEth: string; usdEstimate: string };
   whitelistInput: string;
+  whitelistEntries: WhitelistEntry[];
   onWhitelistInputChange: (value: string) => void;
   onSaveConfig: (event: FormEvent<HTMLFormElement>) => void;
   onSaveWhitelist: (event: FormEvent<HTMLFormElement>) => void;
+  onDeleteWhitelistEntry: (entry: WhitelistEntry) => void;
   isBusy: (key: string) => boolean;
   isAuthed: boolean;
   loadingConfig: boolean;
@@ -37,9 +39,11 @@ export function ThresholdWhitelistTab({
   onConfigFormChange,
   summary,
   whitelistInput,
+  whitelistEntries,
   onWhitelistInputChange,
   onSaveConfig,
   onSaveWhitelist,
+  onDeleteWhitelistEntry,
   isBusy,
   isAuthed,
   loadingConfig
@@ -132,6 +136,26 @@ export function ThresholdWhitelistTab({
         </dl>
 
         <div className="section-label">Whitelist</div>
+        {whitelistEntries.length ? (
+          <ul className="whitelist-list" aria-label="Current whitelist">
+            {whitelistEntries.map((entry) => (
+              <li key={entry.github_user_id}>
+                <span>@{entry.github_login}</span>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={cardsLocked || isBusy(`delete-whitelist-${entry.github_user_id}`)}
+                  onClick={() => onDeleteWhitelistEntry(entry)}
+                  aria-label={`Remove ${entry.github_login} from whitelist`}
+                >
+                  {isBusy(`delete-whitelist-${entry.github_user_id}`) ? 'Removing...' : 'Remove'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="meta">No contributors are currently whitelisted.</p>
+        )}
         <form onSubmit={onSaveWhitelist}>
           <fieldset className="form-lockset" disabled={cardsLocked}>
             <label>

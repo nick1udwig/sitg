@@ -112,6 +112,10 @@ Response:
 
 ### Whitelist
 
+- `GET /api/v1/repos/{repo_id}/whitelist`
+
+Returns the repository's current whitelist entries, ordered by GitHub login.
+
 - `POST /api/v1/repos/{repo_id}/whitelist/resolve-logins`
 
 Uses the owner's GitHub token and resolves up to 100 unique logins per request with bounded concurrency.

@@ -139,11 +139,21 @@ export function resolveWhitelistLogins(repoId: string, logins: string[]): Promis
   });
 }
 
+export function getWhitelist(repoId: string): Promise<WhitelistEntry[] | null> {
+  return requestOptional<WhitelistEntry[]>(`/api/v1/repos/${repoId}/whitelist`);
+}
+
 export function putWhitelist(repoId: string, entries: WhitelistEntry[]): Promise<void> {
   return request<void>(`/api/v1/repos/${repoId}/whitelist`, {
     method: 'PUT',
     headers: JSON_HEADERS,
     body: JSON.stringify({ entries })
+  });
+}
+
+export function deleteWhitelistEntry(repoId: string, githubUserId: number): Promise<void> {
+  return request<void>(`/api/v1/repos/${repoId}/whitelist/${githubUserId}`, {
+    method: 'DELETE'
   });
 }
 

@@ -463,6 +463,29 @@ button:disabled {
   color: var(--ink-soft);
 }
 
+.whitelist-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.whitelist-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+}
+
+.whitelist-list button {
+  padding: 4px 10px;
+}
+
 /* ── Notices (inline) ── */
 
 .notice {

@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppStateProvider, useAppState } from '../state';
 
 const apiMocks = vi.hoisted(() => ({
+  deleteWhitelistEntry: vi.fn(),
   getInstallStatus: vi.fn(),
   getOwnedRepos: vi.fn(),
   getRepoConfig: vi.fn(),
+  getWhitelist: vi.fn(),
   githubSignIn: vi.fn(),
   logout: vi.fn(),
   putRepoConfig: vi.fn(),
@@ -85,6 +87,9 @@ describe('OwnerPage flow', () => {
       installation_account_type: 'User',
       repo_connected: true
     });
+    apiMocks.getWhitelist.mockReset().mockResolvedValue([
+      { github_user_id: 2002, github_login: 'bob' }
+    ]);
     apiMocks.putRepoConfig.mockReset().mockResolvedValue({
       github_repo_id: 999,
       threshold: {
@@ -107,6 +112,7 @@ describe('OwnerPage flow', () => {
       unresolved: ['ghost']
     });
     apiMocks.putWhitelist.mockReset().mockResolvedValue(undefined);
+    apiMocks.deleteWhitelistEntry.mockReset().mockResolvedValue(undefined);
     apiMocks.logout.mockReset().mockResolvedValue(undefined);
   });
 
@@ -128,6 +134,7 @@ describe('OwnerPage flow', () => {
 
     // Navigate to Threshold & Whitelist tab
     await user.click(screen.getByRole('button', { name: 'Threshold & Whitelist' }));
+    expect(await screen.findByText('@bob')).toBeTruthy();
 
     await user.selectOptions(screen.getByLabelText('Input mode'), 'ETH');
     await user.clear(screen.getByLabelText('Value'));
@@ -150,6 +157,14 @@ describe('OwnerPage flow', () => {
       expect(apiMocks.resolveWhitelistLogins).toHaveBeenCalledWith('999', ['alice', 'ghost']);
       expect(apiMocks.putWhitelist).toHaveBeenCalledWith('999', [{ github_user_id: 3003, github_login: 'alice' }]);
     });
+    expect((screen.getByLabelText('GitHub logins (comma separated)') as HTMLTextAreaElement).value).toBe('ghost');
+    expect(screen.getByText('@alice')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Remove bob from whitelist' }));
+    await waitFor(() => {
+      expect(apiMocks.deleteWhitelistEntry).toHaveBeenCalledWith('999', 2002);
+    });
+    expect(screen.queryByText('@bob')).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Repo Info' }));
     expect(screen.getByRole('link', { name: 'Configure App' })).toBeTruthy();
@@ -173,6 +188,27 @@ describe('OwnerPage flow', () => {
       expect(apiMocks.getRepoConfig).toHaveBeenCalledWith('999');
       expect(apiMocks.getInstallStatus).toHaveBeenCalledWith('999');
     });
+  });
+
+  it('keeps unresolved logins editable and does not send an empty whitelist update', async () => {
+    apiMocks.resolveWhitelistLogins.mockResolvedValue({
+      resolved: [],
+      unresolved: ['missing-user']
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole('button', { name: 'owner/repo' });
+    await user.click(screen.getByRole('button', { name: 'Threshold & Whitelist' }));
+    const input = screen.getByLabelText('GitHub logins (comma separated)');
+    await user.type(input, 'missing-user');
+    await user.click(screen.getByRole('button', { name: 'Resolve + Save Whitelist' }));
+
+    await waitFor(() => {
+      expect(apiMocks.resolveWhitelistLogins).toHaveBeenCalledWith('999', ['missing-user']);
+    });
+    expect(apiMocks.putWhitelist).not.toHaveBeenCalled();
+    expect((input as HTMLTextAreaElement).value).toBe('missing-user');
   });
 
   it('recovers from stale selected repo id in local storage', async () => {

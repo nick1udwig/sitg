@@ -1,9 +1,11 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import type { ApiError } from '../types';
 import {
+  deleteWhitelistEntry,
   getInstallStatus,
   getOwnedRepos,
   getRepoConfig,
+  getWhitelist,
   githubSignIn,
   putRepoConfig,
   putWhitelist,
@@ -17,7 +19,7 @@ import { OwnerTabs } from '../components/OwnerTabs';
 import type { OwnerTabId } from '../components/OwnerTabs';
 import { RepoInfoTab } from './owner/RepoInfoTab';
 import { ThresholdWhitelistTab } from './owner/ThresholdWhitelistTab';
-import type { InputMode, InstallStatusResponse, RepoConfigResponse, RepoOption } from '../types';
+import type { InputMode, InstallStatusResponse, RepoConfigResponse, RepoOption, WhitelistEntry } from '../types';
 
 interface RepoConfigFormState {
   inputMode: InputMode;
@@ -38,6 +40,7 @@ export function OwnerPage() {
   const [installStatus, setInstallStatus] = useState<InstallStatusResponse | null>(null);
   const [configForm, setConfigForm] = useState<RepoConfigFormState>(DEFAULT_FORM);
   const [whitelistInput, setWhitelistInput] = useState('');
+  const [whitelistEntries, setWhitelistEntries] = useState<WhitelistEntry[]>([]);
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [loadedRepoId, setLoadedRepoId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<OwnerTabId>('repo-info');
@@ -108,6 +111,8 @@ export function OwnerPage() {
       setConfig(null);
       setInstallStatus(null);
       setConfigForm(DEFAULT_FORM);
+      setWhitelistInput('');
+      setWhitelistEntries([]);
       setLoadedRepoId(null);
       setLoadingConfig(false);
       return;
@@ -117,6 +122,8 @@ export function OwnerPage() {
     setConfig(null);
     setInstallStatus(null);
     setConfigForm(DEFAULT_FORM);
+    setWhitelistInput('');
+    setWhitelistEntries([]);
     setLoadedRepoId(null);
     setLoadingConfig(true);
 
@@ -126,8 +133,12 @@ export function OwnerPage() {
       throw error;
     });
 
-    void Promise.all([optionalConfig, getInstallStatus(selectedOwnedRepo.id)])
-      .then(([repoConfig, install]) => {
+    void Promise.all([
+      optionalConfig,
+      getInstallStatus(selectedOwnedRepo.id),
+      getWhitelist(selectedOwnedRepo.id)
+    ])
+      .then(([repoConfig, install, whitelist]) => {
         if (!mounted) return;
 
         if (repoConfig) {
@@ -142,6 +153,7 @@ export function OwnerPage() {
         }
 
         setInstallStatus(install);
+        setWhitelistEntries(whitelist ?? []);
         setLoadedRepoId(selectedOwnedRepo.id);
       })
       .catch((error) => {
@@ -149,6 +161,7 @@ export function OwnerPage() {
         setConfig(null);
         setInstallStatus(null);
         setConfigForm(DEFAULT_FORM);
+        setWhitelistEntries([]);
         setLoadedRepoId(selectedOwnedRepo.id);
         if (isSessionExpiredError(error)) {
           setMe(null);
@@ -171,6 +184,7 @@ export function OwnerPage() {
   const displayedConfig = detailsAreCurrent ? config : null;
   const displayedInstallStatus = detailsAreCurrent ? installStatus : null;
   const displayedConfigForm = detailsAreCurrent ? configForm : DEFAULT_FORM;
+  const displayedWhitelistEntries = detailsAreCurrent ? whitelistEntries : [];
   const detailsLoading = Boolean(selectedOwnedRepo && (!detailsAreCurrent || loadingConfig));
 
   const summary = useMemo(() => {
@@ -210,14 +224,42 @@ export function OwnerPage() {
     const resolved = await runBusy('save-whitelist', () => resolveWhitelistLogins(selectedOwnedRepo.id, logins));
     if (!resolved) { pushNotice('error', 'Whitelist login resolution failed.'); return; }
 
+    if (!resolved.resolved.length) {
+      setWhitelistInput(resolved.unresolved.join(', '));
+      pushNotice('error', `No GitHub logins could be resolved: ${resolved.unresolved.join(', ')}.`);
+      return;
+    }
+
     const saved = await runBusy('save-whitelist', async () => {
       await putWhitelist(selectedOwnedRepo.id, resolved.resolved);
       return true;
     });
 
     if (!saved) { pushNotice('error', 'Whitelist save failed.'); return; }
-    setWhitelistInput('');
+    setWhitelistEntries((current) => {
+      const byId = new Map(current.map((entry) => [entry.github_user_id, entry]));
+      for (const entry of resolved.resolved) {
+        byId.set(entry.github_user_id, entry);
+      }
+      return [...byId.values()].sort((a, b) => a.github_login.localeCompare(b.github_login));
+    });
+    setWhitelistInput(resolved.unresolved.join(', '));
     pushNotice('success', `Saved ${resolved.resolved.length} whitelist entries. Unresolved: ${resolved.unresolved.join(', ') || 'none'}.`);
+  };
+
+  const handleDeleteWhitelistEntry = async (entry: WhitelistEntry): Promise<void> => {
+    if (!selectedOwnedRepo) return;
+    const busyKey = `delete-whitelist-${entry.github_user_id}`;
+    const deleted = await runBusy(busyKey, async () => {
+      await deleteWhitelistEntry(selectedOwnedRepo.id, entry.github_user_id);
+      return true;
+    });
+    if (!deleted) return;
+
+    setWhitelistEntries((current) => current.filter(
+      (candidate) => candidate.github_user_id !== entry.github_user_id
+    ));
+    pushNotice('success', `Removed @${entry.github_login} from the whitelist.`);
   };
 
   const handleResolveRepoByFullName = async (fullName: string): Promise<{ id: string; fullName: string } | null> => {
@@ -310,9 +352,11 @@ export function OwnerPage() {
             onConfigFormChange={setConfigForm}
             summary={summary}
             whitelistInput={whitelistInput}
+            whitelistEntries={displayedWhitelistEntries}
             onWhitelistInputChange={setWhitelistInput}
             onSaveConfig={handleSaveConfig}
             onSaveWhitelist={handleSaveWhitelist}
+            onDeleteWhitelistEntry={handleDeleteWhitelistEntry}
             isBusy={isBusy}
             isAuthed={Boolean(state.me)}
             loadingConfig={detailsLoading}

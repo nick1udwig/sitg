@@ -6,7 +6,7 @@ use axum::{
     extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect},
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{Duration, Utc};
@@ -74,7 +74,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/repos/{repo_id}/whitelist/resolve-logins",
             post(resolve_logins),
         )
-        .route("/api/v1/repos/{repo_id}/whitelist", put(put_whitelist))
+        .route(
+            "/api/v1/repos/{repo_id}/whitelist",
+            get(get_whitelist).put(put_whitelist),
+        )
         .route(
             "/api/v1/repos/{repo_id}/whitelist/{github_user_id}",
             delete(delete_whitelist_entry),
@@ -605,6 +608,35 @@ fn normalize_whitelist_logins(raw_logins: Vec<String>) -> ApiResult<Vec<String>>
         }
     }
     Ok(logins)
+}
+
+async fn get_whitelist(
+    State(state): State<Arc<AppState>>,
+    Path(repo_id): Path<i64>,
+    jar: CookieJar,
+) -> ApiResult<Json<Vec<ResolvedLogin>>> {
+    require_repo_owner(&state, &jar, repo_id).await?;
+
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        r#"
+        select github_user_id, github_login
+        from repo_whitelist
+        where github_repo_id = $1
+        order by lower(github_login), github_user_id
+        "#,
+    )
+    .bind(repo_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|(github_user_id, github_login)| ResolvedLogin {
+                github_user_id,
+                github_login,
+            })
+            .collect(),
+    ))
 }
 
 async fn put_whitelist(

@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   confirmWalletLink,
+  deleteWhitelistEntry,
   getInstallStatus,
   getMe,
   getOwnedRepos,
   getStakeStatus,
   getStakingConfig,
   getWalletLinkStatus,
+  getWhitelist,
   githubSignIn,
   putRepoConfig,
   requestWalletLinkChallenge,
@@ -145,6 +147,23 @@ describe('api client', () => {
     );
     const result = await resolveWhitelistLogins('1', ['alice']);
     expect(result.resolved[0].github_login).toBe('alice');
+  });
+
+  it('lists and deletes whitelist entries', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(
+      mockJsonResponse(200, [{ github_user_id: 1, github_login: 'alice' }])
+    );
+    fetchSpy.mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+
+    await expect(getWhitelist('9')).resolves.toEqual([
+      { github_user_id: 1, github_login: 'alice' }
+    ]);
+    await expect(deleteWhitelistEntry('9', 1)).resolves.toBeUndefined();
+
+    expect(fetchSpy.mock.calls[0][0]).toContain('/api/v1/repos/9/whitelist');
+    expect(fetchSpy.mock.calls[1][0]).toContain('/api/v1/repos/9/whitelist/1');
+    expect((fetchSpy.mock.calls[1][1] as RequestInit).method).toBe('DELETE');
   });
 
   it('returns null for optional not-found endpoints', async () => {
