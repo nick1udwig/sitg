@@ -47,8 +47,8 @@ use crate::{
     },
     services::internal_auth::verify_internal_request as verify_internal_with_key_id,
     services::signature_service::{
-        recover_eip712_pr_confirmation_address, recover_personal_sign_address, uuid_to_bytes32_hex,
-        uuid_to_uint256_decimal,
+        PrConfirmationSignaturePayload, recover_eip712_pr_confirmation_address,
+        recover_personal_sign_address, uuid_to_bytes32_hex, uuid_to_uint256_decimal,
     },
     services::token_service::digest_session_token,
 };
@@ -892,18 +892,21 @@ async fn post_gate_confirm(
 
     let verifying_contract = &state.config.staking_contract_address;
 
-    let signer = recover_eip712_pr_confirmation_address(
-        STAKING_CHAIN_ID,
+    let challenge_id = uuid_to_bytes32_hex(challenge.id);
+    let nonce = uuid_to_uint256_decimal(nonce_row.nonce);
+    let signature_payload = PrConfirmationSignaturePayload {
+        chain_id: STAKING_CHAIN_ID,
         verifying_contract,
-        challenge.github_pr_author_id,
-        challenge.github_repo_id,
-        challenge.github_pr_number,
-        &challenge.head_sha,
-        &uuid_to_bytes32_hex(challenge.id),
-        &uuid_to_uint256_decimal(nonce_row.nonce),
-        nonce_row.expires_at.timestamp(),
-        &payload.signature,
-    )?;
+        github_user_id: challenge.github_pr_author_id,
+        github_repo_id: challenge.github_repo_id,
+        pull_request_number: challenge.github_pr_number,
+        head_sha: &challenge.head_sha,
+        challenge_id: &challenge_id,
+        nonce: &nonce,
+        expires_at: nonce_row.expires_at.timestamp(),
+    };
+    let signer =
+        recover_eip712_pr_confirmation_address(&signature_payload, &payload.signature)?;
 
     if !signer.eq_ignore_ascii_case(&linked_wallet) {
         return Err(ApiError::Conflict("SIGNER_MISMATCH"));
@@ -953,7 +956,7 @@ async fn post_gate_confirm(
     .bind(challenge.id)
     .bind(payload.signature)
     .bind(&signer)
-    .bind(Value::from(typed_data))
+    .bind(typed_data)
     .bind(Utc::now())
     .execute(&mut *tx)
     .await?;
@@ -989,14 +992,16 @@ async fn post_gate_confirm(
             let comment_marker = format!("sitg:verified:{}", challenge.id);
             if let Err(err) = queue_pr_comment_action(
                 &state.pool,
-                Some(challenge.id),
-                installation_id,
-                challenge.github_repo_id,
-                &challenge.github_repo_full_name,
-                challenge.github_pr_number,
-                "Stake verification complete. This PR is verified.",
-                &comment_marker,
-                "CHALLENGE_VERIFIED",
+                PrCommentAction {
+                    challenge_id: Some(challenge.id),
+                    installation_id,
+                    github_repo_id: challenge.github_repo_id,
+                    repo_full_name: &challenge.github_repo_full_name,
+                    github_pr_number: challenge.github_pr_number,
+                    comment_markdown: "Stake verification complete. This PR is verified.",
+                    comment_marker: &comment_marker,
+                    reason: "CHALLENGE_VERIFIED",
+                },
             )
             .await
             {
@@ -1382,17 +1387,19 @@ async fn internal_v2_pr_events(
     if is_whitelisted.is_some() {
         let inserted = queue_pr_comment_action(
             &mut *tx,
-            None,
-            payload.installation_id,
-            payload.repository.id,
-            &payload.repository.full_name,
-            payload.pull_request.number,
-            "Contributor is whitelisted for this repository. No stake verification is required.",
-            &format!(
-                "sitg:exempt:{}:{}",
-                payload.repository.id, payload.pull_request.number
-            ),
-            "WHITELIST_EXEMPT",
+            PrCommentAction {
+                challenge_id: None,
+                installation_id: payload.installation_id,
+                github_repo_id: payload.repository.id,
+                repo_full_name: &payload.repository.full_name,
+                github_pr_number: payload.pull_request.number,
+                comment_markdown: "Contributor is whitelisted for this repository. No stake verification is required.",
+                comment_marker: &format!(
+                    "sitg:exempt:{}:{}",
+                    payload.repository.id, payload.pull_request.number
+                ),
+                reason: "WHITELIST_EXEMPT",
+            },
         )
         .await?;
         tx.commit().await?;
@@ -1518,14 +1525,16 @@ async fn internal_v2_pr_events(
         );
         let inserted = queue_pr_comment_action(
             &mut *tx,
-            Some(*challenge_id),
-            payload.installation_id,
-            payload.repository.id,
-            &payload.repository.full_name,
-            payload.pull_request.number,
-            &comment,
-            &format!("sitg:gate:{}", challenge_id),
-            "REQUIRE_STAKE",
+            PrCommentAction {
+                challenge_id: Some(*challenge_id),
+                installation_id: payload.installation_id,
+                github_repo_id: payload.repository.id,
+                repo_full_name: &payload.repository.full_name,
+                github_pr_number: payload.pull_request.number,
+                comment_markdown: &comment,
+                comment_marker: &format!("sitg:gate:{}", challenge_id),
+                reason: "REQUIRE_STAKE",
+            },
         )
         .await?;
         if inserted {
@@ -2006,16 +2015,20 @@ async fn internal_v2_bot_action_result(
     }))
 }
 
-async fn queue_pr_comment_action<'e, E>(
-    executor: E,
+struct PrCommentAction<'a> {
     challenge_id: Option<Uuid>,
     installation_id: i64,
     github_repo_id: i64,
-    repo_full_name: &str,
+    repo_full_name: &'a str,
     github_pr_number: i32,
-    comment_markdown: &str,
-    comment_marker: &str,
-    reason: &str,
+    comment_markdown: &'a str,
+    comment_marker: &'a str,
+    reason: &'a str,
+}
+
+async fn queue_pr_comment_action<'e, E>(
+    executor: E,
+    action: PrCommentAction<'_>,
 ) -> ApiResult<bool>
 where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
@@ -2030,15 +2043,15 @@ where
         "#,
     )
     .bind(Uuid::new_v4())
-    .bind(challenge_id)
-    .bind(installation_id)
-    .bind(github_repo_id)
-    .bind(repo_full_name)
-    .bind(github_pr_number)
+    .bind(action.challenge_id)
+    .bind(action.installation_id)
+    .bind(action.github_repo_id)
+    .bind(action.repo_full_name)
+    .bind(action.github_pr_number)
     .bind(json!({
-      "comment_markdown": comment_markdown,
-      "comment_marker": comment_marker,
-      "reason": reason
+      "comment_markdown": action.comment_markdown,
+      "comment_marker": action.comment_marker,
+      "reason": action.reason
     }))
     .bind(Utc::now())
     .execute(executor)
