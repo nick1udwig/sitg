@@ -10,6 +10,7 @@ const CODE_MESSAGES: Record<string, string> = {
   WALLET_LINK_CHALLENGE_INVALID: 'Wallet link challenge expired or already used. Retry linking.',
   WALLET_ALREADY_LINKED: 'This wallet is already linked to another GitHub account.',
   NONCE_INVALID: 'Confirmation nonce is invalid or expired. Reload and retry.',
+  REPO_NOT_CONNECTED: 'Connect this repository to the GitHub App before changing its settings.',
   VALIDATION_ERROR: 'Please check your inputs and try again.'
 };
 

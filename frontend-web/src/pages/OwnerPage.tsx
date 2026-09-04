@@ -213,7 +213,11 @@ export function OwnerPage() {
 
   const installUrl = import.meta.env.VITE_GITHUB_APP_INSTALL_URL ?? '';
   const installStatusView = installStatus
-    ? (installStatus.installed ? 'installed' : 'not-installed')
+    ? !installStatus.installed
+      ? 'not-installed'
+      : installStatus.repo_connected
+        ? 'connected'
+        : 'not-connected'
     : 'unknown';
 
   const handleGitHubSignIn = async (): Promise<void> => {

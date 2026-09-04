@@ -10,7 +10,7 @@ interface ConfigFormState {
 
 interface ThresholdWhitelistTabProps {
   selectedRepo: RepoSelection | null;
-  installStatus: 'installed' | 'not-installed' | 'unknown';
+  installStatus: 'connected' | 'not-connected' | 'not-installed' | 'unknown';
   configForm: ConfigFormState;
   onConfigFormChange: (updater: (prev: ConfigFormState) => ConfigFormState) => void;
   summary: { enforcedEth: string; usdEstimate: string };
@@ -24,7 +24,8 @@ interface ThresholdWhitelistTabProps {
 }
 
 const INSTALL_DOT: Record<string, string> = {
-  installed: 'green',
+  connected: 'green',
+  'not-connected': 'amber',
   'not-installed': 'amber',
   unknown: 'gray'
 };
@@ -43,17 +44,20 @@ export function ThresholdWhitelistTab({
   isAuthed,
   loadingConfig
 }: ThresholdWhitelistTabProps) {
-  const appInstalled = installStatus === 'installed';
-  const saveConfigDisabled = isBusy('save-config') || !selectedRepo || !isAuthed || !appInstalled;
-  const saveWhitelistDisabled = isBusy('save-whitelist') || !selectedRepo || !isAuthed || !appInstalled;
-  const cardsLocked = !appInstalled;
+  const repoConnected = installStatus === 'connected';
+  const saveConfigDisabled = isBusy('save-config') || !selectedRepo || !isAuthed || !repoConnected;
+  const saveWhitelistDisabled = isBusy('save-whitelist') || !selectedRepo || !isAuthed || !repoConnected;
+  const cardsLocked = !repoConnected;
+  const connectionHelp = installStatus === 'not-connected'
+    ? 'Connect this repository in the GitHub App to unlock Threshold and Whitelist settings.'
+    : 'Install the GitHub App to unlock Threshold and Whitelist settings.';
 
   return (
     <div className="grid two">
       {cardsLocked ? (
         <div className="install-required-banner" role="status" aria-live="polite">
           <span className="status-dot amber" />
-          Install the GitHub App to unlock Threshold and Whitelist settings.
+          {connectionHelp}
         </div>
       ) : null}
 
@@ -118,7 +122,7 @@ export function ThresholdWhitelistTab({
           <dd>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <span className={`status-dot ${INSTALL_DOT[installStatus]}`} />
-              {installStatus}
+              {installStatus.replaceAll('-', ' ')}
             </span>
           </dd>
           <dt>Enforced ETH</dt>

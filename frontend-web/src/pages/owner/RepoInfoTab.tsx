@@ -3,19 +3,20 @@ import type { InstallStatusResponse } from '../../types';
 
 interface RepoInfoTabProps {
   selectedRepo: RepoSelection | null;
-  installStatus: 'installed' | 'not-installed' | 'unknown';
+  installStatus: 'connected' | 'not-connected' | 'not-installed' | 'unknown';
   installDetails: InstallStatusResponse | null;
   installUrl: string;
 }
 
 const INSTALL_DOT: Record<string, string> = {
-  installed: 'green',
+  connected: 'green',
+  'not-connected': 'amber',
   'not-installed': 'amber',
   unknown: 'gray'
 };
 
 export function RepoInfoTab({ selectedRepo, installStatus, installDetails, installUrl }: RepoInfoTabProps) {
-  const ctaLabel = installStatus === 'installed' ? 'Configure App' : 'Install App';
+  const ctaLabel = installDetails?.installed ? 'Configure App' : 'Install App';
 
   return (
     <article className="card">
@@ -33,7 +34,7 @@ export function RepoInfoTab({ selectedRepo, installStatus, installDetails, insta
         <dd>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <span className={`status-dot ${INSTALL_DOT[installStatus]}`} />
-            {installStatus}
+            {installStatus.replaceAll('-', ' ')}
           </span>
         </dd>
         <dt>Installation ID</dt>

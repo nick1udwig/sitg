@@ -221,4 +221,26 @@ describe('OwnerPage flow', () => {
     expect((saveConfigButton as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('Install the GitHub App to unlock Threshold and Whitelist settings.')).toBeTruthy();
   });
+
+  it('locks settings when the app account exists but the repository was disconnected', async () => {
+    const user = userEvent.setup();
+    apiMocks.getInstallStatus.mockResolvedValue({
+      installed: true,
+      installation_id: 123,
+      installation_account_login: 'owner',
+      installation_account_type: 'User',
+      repo_connected: false
+    });
+
+    renderPage();
+    await screen.findByRole('button', { name: 'owner/repo' });
+    expect(await screen.findByText('not connected')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Configure App' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Threshold & Whitelist' }));
+    expect((screen.getByRole('button', { name: 'Save Config' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      screen.getByText('Connect this repository in the GitHub App to unlock Threshold and Whitelist settings.')
+    ).toBeTruthy();
+  });
 });

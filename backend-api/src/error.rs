@@ -45,6 +45,7 @@ impl ApiError {
             ApiError::Validation(_) => "VALIDATION_ERROR",
             ApiError::PriceUnavailable => "PRICE_UNAVAILABLE",
             ApiError::Conflict("WALLET_HAS_STAKE") => "WALLET_HAS_STAKE",
+            ApiError::Conflict("REPO_NOT_CONNECTED") => "REPO_NOT_CONNECTED",
             ApiError::Conflict(_) => "CONFLICT",
             ApiError::Db(_) | ApiError::Internal(_) => "INTERNAL_ERROR",
         }
@@ -107,6 +108,13 @@ mod tests {
         let (status, payload) = error_payload(ApiError::Conflict("RATE_LIMITED")).await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(payload["error"]["code"], "CONFLICT");
+    }
+
+    #[tokio::test]
+    async fn maps_disconnected_repo_to_specific_code() {
+        let (status, payload) = error_payload(ApiError::Conflict("REPO_NOT_CONNECTED")).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(payload["error"]["code"], "REPO_NOT_CONNECTED");
     }
 
     #[tokio::test]

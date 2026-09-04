@@ -348,7 +348,7 @@ async fn get_repo_github_app_status(
         join github_installations i on i.installation_id = gir.installation_id
         where gir.github_repo_id = $1
           and i.active = true
-        order by gir.updated_at desc
+        order by gir.active desc, gir.updated_at desc
         limit 1
         "#,
     )
@@ -421,6 +421,35 @@ async fn put_repo_config(
         return Err(ApiError::validation("input_value must be > 0"));
     }
 
+    let existing: Option<String> =
+        sqlx::query_scalar("select full_name from repo_configs where github_repo_id = $1")
+            .bind(repo_id)
+            .fetch_optional(&state.pool)
+            .await?;
+
+    let (full_name, created) = if let Some(full_name) = existing {
+        let has_access = state
+            .github_oauth_service
+            .has_repo_write_access(token, &full_name, &user.github_login)
+            .await?;
+        if !has_access {
+            return Err(ApiError::Forbidden);
+        }
+        (full_name, false)
+    } else {
+        let repo = state
+            .github_oauth_service
+            .lookup_repo_by_id(token, repo_id)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+        if !repo.can_write {
+            return Err(ApiError::Forbidden);
+        }
+
+        (repo.full_name, true)
+    };
+
+    let installation_id = require_active_repo_installation(&state, repo_id).await?;
     let quote = state.quote_service.live_or_cached_eth_usd_quote().await?;
 
     let eth_value = if input_mode == "USD" {
@@ -433,58 +462,6 @@ async fn put_repo_config(
     };
 
     let threshold_wei = eth_to_wei(eth_value)?;
-
-    let existing: Option<(String, i64)> = sqlx::query_as(
-        "select full_name, installation_id from repo_configs where github_repo_id = $1",
-    )
-    .bind(repo_id)
-    .fetch_optional(&state.pool)
-    .await?;
-
-    let (full_name, installation_id, created) = if let Some((full_name, installation_id)) = existing
-    {
-        let has_access = state
-            .github_oauth_service
-            .has_repo_write_access(token, &full_name, &user.github_login)
-            .await?;
-        if !has_access {
-            return Err(ApiError::Forbidden);
-        }
-        (full_name, installation_id, false)
-    } else {
-        let repo = state
-            .github_oauth_service
-            .lookup_repo_by_id(token, repo_id)
-            .await?
-            .ok_or(ApiError::NotFound)?;
-        if !repo.can_write {
-            return Err(ApiError::Forbidden);
-        }
-
-        let installation_id: Option<i64> = sqlx::query_scalar(
-            r#"
-            select gir.installation_id
-            from github_installation_repositories gir
-            join github_installations i on i.installation_id = gir.installation_id
-            where gir.github_repo_id = $1
-              and gir.active = true
-              and i.active = true
-            order by gir.updated_at desc
-            limit 1
-            "#,
-        )
-        .bind(repo_id)
-        .fetch_optional(&state.pool)
-        .await?;
-
-        let installation_id = installation_id.ok_or_else(|| {
-            ApiError::validation(
-                "GitHub App is not connected to this repository yet. Install/connect the app and retry.",
-            )
-        })?;
-
-        (repo.full_name, installation_id, true)
-    };
 
     let now = Utc::now();
 
@@ -569,6 +546,7 @@ async fn resolve_logins(
     Json(payload): Json<ResolveLoginsRequest>,
 ) -> ApiResult<Json<ResolveLoginsResponse>> {
     require_repo_owner(&state, &jar, repo_id).await?;
+    require_active_repo_installation(&state, repo_id).await?;
 
     if payload.logins.is_empty() {
         return Ok(Json(ResolveLoginsResponse {
@@ -603,6 +581,7 @@ async fn put_whitelist(
     Json(payload): Json<WhitelistPutRequest>,
 ) -> ApiResult<StatusCode> {
     let user = require_repo_owner(&state, &jar, repo_id).await?;
+    require_active_repo_installation(&state, repo_id).await?;
     let mut tx = state.pool.begin().await?;
 
     for entry in payload.entries {
@@ -640,6 +619,7 @@ async fn delete_whitelist_entry(
     jar: CookieJar,
 ) -> ApiResult<StatusCode> {
     let user = require_repo_owner(&state, &jar, repo_id).await?;
+    require_active_repo_installation(&state, repo_id).await?;
 
     sqlx::query("delete from repo_whitelist where github_repo_id = $1 and github_user_id = $2")
         .bind(repo_id)
@@ -2019,6 +1999,26 @@ async fn require_repo_owner(
         return Err(ApiError::Forbidden);
     }
     Ok(user)
+}
+
+async fn require_active_repo_installation(state: &AppState, repo_id: i64) -> ApiResult<i64> {
+    let installation_id: Option<i64> = sqlx::query_scalar(
+        r#"
+        select gir.installation_id
+        from github_installation_repositories gir
+        join github_installations i on i.installation_id = gir.installation_id
+        where gir.github_repo_id = $1
+          and gir.active = true
+          and i.active = true
+        order by gir.updated_at desc
+        limit 1
+        "#,
+    )
+    .bind(repo_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    installation_id.ok_or(ApiError::Conflict("REPO_NOT_CONNECTED"))
 }
 
 async fn verify_internal_from_headers(
