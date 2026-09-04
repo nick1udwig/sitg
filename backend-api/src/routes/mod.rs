@@ -1122,7 +1122,13 @@ async fn wallet_unlink(
 async fn get_stake_status(
     State(state): State<Arc<AppState>>,
     Query(query): Query<StakeStatusQuery>,
+    jar: CookieJar,
 ) -> ApiResult<Json<StakeStatusResponse>> {
+    let user = require_current_user(&state, &jar).await?;
+    state
+        .rate_limiter
+        .check(&format!("stake:status:{}", user.id), 30, 60)?;
+
     let wallet_address = normalize_wallet_address(&query.wallet)?;
     let stake_status = state.stake_service.stake_status(&wallet_address).await?;
 
@@ -2319,8 +2325,9 @@ fn build_token(size: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::db::RepoConfigRow;
+    use crate::{config::Config, models::db::RepoConfigRow};
     use chrono::{TimeZone, Timelike};
+    use sqlx::postgres::PgPoolOptions;
 
     #[test]
     fn converts_eth_to_wei() {
@@ -2370,6 +2377,39 @@ mod tests {
     fn rejects_invalid_wallet_address() {
         let err = normalize_wallet_address("0x123").expect_err("should reject invalid");
         assert!(matches!(err, ApiError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn stake_status_requires_an_authenticated_session() {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/sitg_test")
+            .expect("lazy pool");
+        let config = Config {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            database_url: "postgres://localhost/sitg".to_string(),
+            db_max_connections: 1,
+            app_base_url: "https://sitg.io".to_string(),
+            api_base_url: "https://sitg.io".to_string(),
+            github_client_id: None,
+            github_client_secret: None,
+            session_cookie_name: "sitg_session".to_string(),
+            blocked_unlink_wallets: vec![],
+            base_rpc_url: "https://mainnet.base.org".to_string(),
+            staking_contract_address: "0x1111111111111111111111111111111111111111".to_string(),
+        };
+        let state = Arc::new(AppState::new(pool, config));
+
+        let result = get_stake_status(
+            State(state),
+            Query(StakeStatusQuery {
+                wallet: "0x1111111111111111111111111111111111111111".to_string(),
+            }),
+            CookieJar::new(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(ApiError::Unauthenticated)));
     }
 
     #[test]

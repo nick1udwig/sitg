@@ -187,7 +187,10 @@ Binding rules:
 - `GET /api/v1/gate/{gate_token}`
 - `POST /api/v1/wallet/link/challenge`
 - `POST /api/v1/wallet/link/confirm`
+- `GET /api/v1/wallet/link`
 - `DELETE /api/v1/wallet/link`
+- `GET /api/v1/staking/config`
+- `GET /api/v1/stake/status?wallet=0x...` (authenticated and rate-limited per user)
 
 `DELETE /wallet/link` failure case:
 - `409 WALLET_HAS_STAKE` if current linked wallet has non-zero on-chain balance.
