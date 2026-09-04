@@ -4,6 +4,7 @@
 
 - Desktop web only.
 - Mobile is not supported and should show an explicit unsupported message.
+- Owner and contributor route trees are loaded on demand; wallet providers and RainbowKit assets must stay behind contributor routes so they are not part of the landing/owner entry bundle.
 
 ## Primary pages
 

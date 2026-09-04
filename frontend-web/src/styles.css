@@ -721,6 +721,15 @@ button.toast-close:hover:not(:disabled) {
   color: var(--accent);
 }
 
+.route-loading {
+  display: grid;
+  min-height: calc(100vh - 120px);
+  place-items: center;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
 /* ── Keyframes ── */
 
 @keyframes fadeIn {
