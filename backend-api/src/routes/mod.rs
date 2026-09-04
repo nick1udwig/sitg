@@ -463,16 +463,8 @@ async fn put_repo_config(
     let installation_id = require_active_repo_installation(&state, repo_id).await?;
     let quote = state.quote_service.live_or_cached_eth_usd_quote().await?;
 
-    let eth_value = if input_mode == "USD" {
-        if quote.price <= Decimal::ZERO {
-            return Err(ApiError::PriceUnavailable);
-        }
-        input_value / quote.price
-    } else {
-        input_value
-    };
-
-    let threshold_wei = eth_to_wei(eth_value)?;
+    let threshold_wei =
+        threshold_wei_from_input(&input_mode, input_value, quote.price)?;
 
     let now = Utc::now();
 
@@ -2381,7 +2373,37 @@ fn repo_config_row_to_response(row: &RepoConfigRow) -> RepoConfigResponse {
 
 fn eth_to_wei(eth: Decimal) -> ApiResult<Decimal> {
     let scale = Decimal::from_i128_with_scale(1_000_000_000_000_000_000i128, 0);
-    Ok((eth * scale).round_dp(0))
+    let wei = eth
+        .checked_mul(scale)
+        .ok_or_else(|| ApiError::validation("input_value is out of supported range"))?
+        .round_dp(0);
+    if wei < Decimal::ONE {
+        return Err(ApiError::validation(
+            "input_value must resolve to at least one wei",
+        ));
+    }
+    Ok(wei)
+}
+
+fn threshold_wei_from_input(
+    input_mode: &str,
+    input_value: Decimal,
+    spot_price_usd: Decimal,
+) -> ApiResult<Decimal> {
+    let eth_value = match input_mode {
+        "ETH" => input_value,
+        "USD" => {
+            if spot_price_usd <= Decimal::ZERO {
+                return Err(ApiError::PriceUnavailable);
+            }
+            input_value
+                .checked_div(spot_price_usd)
+                .ok_or_else(|| ApiError::validation("input_value is out of supported range"))?
+        }
+        _ => return Err(ApiError::validation("input_mode must be ETH or USD")),
+    };
+
+    eth_to_wei(eth_value)
 }
 
 fn wei_to_eth_str(wei: &Decimal) -> String {
@@ -2447,6 +2469,26 @@ mod tests {
         let wei = eth_to_wei(Decimal::from_str_exact("0.1").expect("valid decimal"))
             .expect("conversion should succeed");
         assert_eq!(wei.to_string(), "100000000000000000");
+    }
+
+    #[test]
+    fn rejects_thresholds_that_round_to_zero_wei() {
+        let below_one_wei =
+            Decimal::from_str_exact("0.0000000000000000001").expect("valid decimal");
+        let error = eth_to_wei(below_one_wei).expect_err("zero-wei threshold must be rejected");
+
+        assert!(matches!(error, ApiError::Validation(message) if message.contains("one wei")));
+    }
+
+    #[test]
+    fn returns_validation_errors_for_decimal_overflow() {
+        let eth_error = eth_to_wei(Decimal::MAX).expect_err("ETH overflow must be rejected");
+        assert!(matches!(eth_error, ApiError::Validation(_)));
+
+        let tiny_price = Decimal::from_str_exact("0.00000001").expect("valid decimal");
+        let usd_error = threshold_wei_from_input("USD", Decimal::MAX, tiny_price)
+            .expect_err("USD division overflow must be rejected");
+        assert!(matches!(usd_error, ApiError::Validation(_)));
     }
 
     #[test]
