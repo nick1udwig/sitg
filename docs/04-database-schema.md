@@ -11,6 +11,9 @@
 ### `oauth_states`, `user_sessions`, and `wallet_link_challenges`
 
 - OAuth states are removed after expiration.
+- `user_sessions.session_token` stores only a `sha256:`-prefixed digest of the browser token.
+- `user_sessions.github_access_token_encrypted` stores versioned AES-256-GCM ciphertext.
+- The legacy `github_access_token` column is cleared by a startup backfill before serving traffic.
 - Sessions are removed after expiration or revocation.
 - Wallet-link challenges are removed after use or expiration.
 - Cleanup lookup expressions are indexed and cleanup runs in bounded batches.

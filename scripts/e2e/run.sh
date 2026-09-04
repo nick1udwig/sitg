@@ -229,6 +229,7 @@ info "Starting backend-api"
     PORT="$BACKEND_PORT" \
     APP_BASE_URL="$FRONTEND_URL" \
     API_BASE_URL="$BACKEND_URL" \
+    TOKEN_ENCRYPTION_KEY="BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=" \
     BASE_RPC_URL="$ANVIL_RPC_URL" \
     STAKING_CONTRACT_ADDRESS="$STAKING_CONTRACT_ADDRESS" \
     RUST_LOG="info" \
@@ -239,6 +240,7 @@ wait_http "$BACKEND_URL/healthz" 120 || fail "backend-api did not become ready"
 
 info "Seeding database"
 BOT_SECRET_SHA256="$(printf '%s' "$BOT_RAW_SECRET" | sha256sum | awk '{print $1}')"
+CONTRIB_SESSION_DIGEST="sha256:$(printf '%s' "$CONTRIB_SESSION_TOKEN" | sha256sum | awk '{print $1}')"
 cat <<SQL | psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 >/dev/null
 delete from bot_actions;
 delete from challenge_nonces;
@@ -253,8 +255,8 @@ values
 on conflict (github_user_id) do update set github_login = excluded.github_login, updated_at = now();
 
 insert into user_sessions (id, user_id, session_token, github_access_token, expires_at, created_at, revoked_at)
-values ('00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000002', '${CONTRIB_SESSION_TOKEN}', 'gho_e2e_contrib', now() + interval '30 days', now(), null)
-on conflict (session_token) do update set user_id = excluded.user_id, github_access_token = excluded.github_access_token, expires_at = excluded.expires_at, revoked_at = null;
+values ('00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000002', '${CONTRIB_SESSION_DIGEST}', null, now() + interval '30 days', now(), null)
+on conflict (session_token) do update set user_id = excluded.user_id, github_access_token = null, github_access_token_encrypted = null, expires_at = excluded.expires_at, revoked_at = null;
 
 delete from wallet_links where user_id = '00000000-0000-0000-0000-000000000002';
 

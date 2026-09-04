@@ -391,6 +391,7 @@ mod tests {
             api_base_url: "https://api.sitg.io".to_string(),
             github_client_id: client_id.map(str::to_string),
             github_client_secret: Some("secret".to_string()),
+            token_encryption_key: crate::config::TokenEncryptionKey::from_bytes([7_u8; 32]),
             session_cookie_name: "sitg_session".to_string(),
             blocked_unlink_wallets: vec![],
             base_rpc_url: "https://mainnet.base.org".to_string(),

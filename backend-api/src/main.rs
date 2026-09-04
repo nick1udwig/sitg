@@ -31,6 +31,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     let state = Arc::new(AppState::new(pool, config.clone()));
+    let encrypted_legacy_tokens = state
+        .token_cipher
+        .encrypt_legacy_github_tokens(&state.pool)
+        .await?;
+    if encrypted_legacy_tokens > 0 {
+        tracing::info!(encrypted_legacy_tokens, "encrypted legacy GitHub OAuth tokens");
+    }
     services::jobs::start_background_jobs(state.clone());
     let app = routes::router(state);
 

@@ -54,6 +54,11 @@ async fn apply_migrations(pool: &PgPool) {
     ))
     .await
     .expect("apply 0012");
+    pool.execute(include_str!(
+        "../migrations/0013_protect_session_tokens.sql"
+    ))
+    .await
+    .expect("apply 0013");
 }
 
 #[tokio::test]

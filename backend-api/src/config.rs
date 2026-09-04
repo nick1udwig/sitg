@@ -1,8 +1,28 @@
-use std::env;
+use std::{env, fmt};
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use thiserror::Error;
 
 pub const STAKING_CHAIN_ID: u64 = 8453;
+
+#[derive(Clone)]
+pub struct TokenEncryptionKey([u8; 32]);
+
+impl TokenEncryptionKey {
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for TokenEncryptionKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TokenEncryptionKey([REDACTED])")
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -12,6 +32,8 @@ pub enum ConfigError {
     InvalidUrl(&'static str),
     #[error("STAKING_CONTRACT_ADDRESS must be a non-zero 20-byte hex address")]
     InvalidStakingContractAddress,
+    #[error("TOKEN_ENCRYPTION_KEY must be base64-encoded 32-byte key material")]
+    InvalidTokenEncryptionKey,
 }
 
 #[derive(Clone, Debug)]
@@ -24,6 +46,7 @@ pub struct Config {
     pub api_base_url: String,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    pub token_encryption_key: TokenEncryptionKey,
     pub session_cookie_name: String,
     pub blocked_unlink_wallets: Vec<String>,
     pub base_rpc_url: String,
@@ -57,6 +80,8 @@ impl Config {
             .map(str::to_lowercase)
             .collect::<Vec<_>>();
         let database_url = required_env("DATABASE_URL")?;
+        let token_encryption_key =
+            parse_token_encryption_key(&required_env("TOKEN_ENCRYPTION_KEY")?)?;
         let base_rpc_url = required_env("BASE_RPC_URL")?;
         let rpc_url = reqwest::Url::parse(&base_rpc_url)
             .map_err(|_| ConfigError::InvalidUrl("BASE_RPC_URL"))?;
@@ -78,12 +103,23 @@ impl Config {
             api_base_url,
             github_client_id,
             github_client_secret,
+            token_encryption_key,
             session_cookie_name,
             blocked_unlink_wallets,
             base_rpc_url,
             staking_contract_address,
         })
     }
+}
+
+fn parse_token_encryption_key(value: &str) -> Result<TokenEncryptionKey, ConfigError> {
+    let decoded = STANDARD
+        .decode(value)
+        .map_err(|_| ConfigError::InvalidTokenEncryptionKey)?;
+    let bytes: [u8; 32] = decoded
+        .try_into()
+        .map_err(|_| ConfigError::InvalidTokenEncryptionKey)?;
+    Ok(TokenEncryptionKey::from_bytes(bytes))
 }
 
 fn required_env(name: &'static str) -> Result<String, ConfigError> {
@@ -116,6 +152,7 @@ mod tests {
         "API_BASE_URL",
         "GITHUB_CLIENT_ID",
         "GITHUB_CLIENT_SECRET",
+        "TOKEN_ENCRYPTION_KEY",
         "SESSION_COOKIE_NAME",
         "BLOCKED_UNLINK_WALLETS",
         "BASE_RPC_URL",
@@ -172,6 +209,7 @@ mod tests {
 
         unsafe {
             env::set_var("DATABASE_URL", "postgres://localhost/sitg");
+            env::set_var("TOKEN_ENCRYPTION_KEY", STANDARD.encode([7_u8; 32]));
             env::set_var("BASE_RPC_URL", "https://mainnet.base.org");
             env::set_var(
                 "STAKING_CONTRACT_ADDRESS",
@@ -198,6 +236,7 @@ mod tests {
             config.blocked_unlink_wallets,
             vec!["0xabc".to_string(), "0xdef".to_string()]
         );
+        assert!(!format!("{config:?}").contains(&STANDARD.encode([7_u8; 32])));
     }
 
     #[test]
@@ -218,6 +257,7 @@ mod tests {
 
         unsafe {
             env::set_var("DATABASE_URL", "postgres://localhost/sitg");
+            env::set_var("TOKEN_ENCRYPTION_KEY", STANDARD.encode([7_u8; 32]));
             env::set_var("BASE_RPC_URL", "not a URL");
             env::set_var(
                 "STAKING_CONTRACT_ADDRESS",
@@ -233,5 +273,20 @@ mod tests {
         }
         let err = Config::from_env().expect_err("zero contract should fail");
         assert!(matches!(err, ConfigError::InvalidStakingContractAddress));
+    }
+
+    #[test]
+    fn rejects_invalid_token_encryption_key() {
+        let _lock = env_lock().lock().expect("env lock");
+        let _snapshot = EnvSnapshot::capture();
+        EnvSnapshot::clear_tracked();
+
+        unsafe {
+            env::set_var("DATABASE_URL", "postgres://localhost/sitg");
+            env::set_var("TOKEN_ENCRYPTION_KEY", "too-short");
+        }
+
+        let err = Config::from_env().expect_err("invalid encryption key should fail");
+        assert!(matches!(err, ConfigError::InvalidTokenEncryptionKey));
     }
 }

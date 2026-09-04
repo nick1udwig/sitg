@@ -185,6 +185,7 @@ dependencies = [
  "num-bigint",
  "rand 0.8.5",
  "reqwest",
+ "ring",
  "rust_decimal",
  "serde",
  "serde_json",

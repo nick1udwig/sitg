@@ -387,6 +387,7 @@ mod tests {
                 api_base_url: "https://sitg.io".to_string(),
                 github_client_id: None,
                 github_client_secret: None,
+                token_encryption_key: crate::config::TokenEncryptionKey::from_bytes([7_u8; 32]),
                 session_cookie_name: "sitg_session".to_string(),
                 blocked_unlink_wallets: vec![],
                 base_rpc_url: "https://mainnet.base.org".to_string(),
@@ -656,12 +657,16 @@ mod tests {
         )
         .bind(old_session_id)
         .bind(user_id)
-        .bind(format!("old-session-{scope}"))
+        .bind(crate::services::token_service::digest_session_token(&format!(
+            "old-session-{scope}"
+        )))
         .bind(now + ChronoDuration::hours(1))
         .bind(now)
         .bind(now - ChronoDuration::minutes(1))
         .bind(fresh_session_id)
-        .bind(format!("fresh-session-{scope}"))
+        .bind(crate::services::token_service::digest_session_token(&format!(
+            "fresh-session-{scope}"
+        )))
         .execute(&pool)
         .await
         .expect("insert sessions");

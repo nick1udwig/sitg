@@ -164,6 +164,7 @@ mod tests {
             api_base_url: "http://localhost:8080".to_string(),
             github_client_id: None,
             github_client_secret: None,
+            token_encryption_key: crate::config::TokenEncryptionKey::from_bytes([7_u8; 32]),
             session_cookie_name: "sitg_session".to_string(),
             blocked_unlink_wallets,
             base_rpc_url: "https://mainnet.base.org".to_string(),

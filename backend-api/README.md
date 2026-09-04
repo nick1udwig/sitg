@@ -23,6 +23,8 @@ export API_BASE_URL=http://localhost:8080
 # GitHub OAuth callback URL: {API_BASE_URL}/api/v1/auth/github/callback
 export GITHUB_CLIENT_ID=...
 export GITHUB_CLIENT_SECRET=...
+# Generate once with: openssl rand -base64 32
+export TOKEN_ENCRYPTION_KEY=...
 export BASE_RPC_URL=https://mainnet.base.org
 export STAKING_CONTRACT_ADDRESS=0x...
 # optional: comma-separated wallets for local unlink stake-block simulation
@@ -32,6 +34,8 @@ export BLOCKED_UNLINK_WALLETS=0xabc...,0xdef...
 GitHub OAuth notes:
 - OAuth authorize scope includes `read:user public_repo`.
 - Repo-owner authorization checks use the logged-in user's OAuth access token from session.
+- Session bearer tokens are stored only as SHA-256 digests. GitHub OAuth tokens are
+  encrypted with `TOKEN_ENCRYPTION_KEY`; keep that key stable across restarts.
 
 2. Apply SQL migrations in order:
 - `migrations/0001_init.sql`
@@ -46,6 +50,7 @@ GitHub OAuth notes:
 - `migrations/0010_quote_cache_lookup.sql`
 - `migrations/0011_pending_challenge_deadlines.sql`
 - `migrations/0012_retention_cleanup_indexes.sql`
+- `migrations/0013_protect_session_tokens.sql`
 
 Note: service startup also runs embedded migrations automatically.
 

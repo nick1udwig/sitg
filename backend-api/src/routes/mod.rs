@@ -45,6 +45,7 @@ use crate::{
         recover_eip712_pr_confirmation_address, recover_personal_sign_address, uuid_to_bytes32_hex,
         uuid_to_uint256_decimal,
     },
+    services::token_service::digest_session_token,
 };
 
 const BOT_ACTION_CLAIM_LEASE_SECONDS: i64 = 5 * 60;
@@ -209,6 +210,7 @@ async fn auth_github_callback(
         .exchange_code_for_token(&state.config, code)
         .await?;
     let gh_user = state.github_oauth_service.fetch_user(&access_token).await?;
+    let encrypted_access_token = state.token_cipher.encrypt(&access_token)?;
 
     let now = Utc::now();
     let user_id = Uuid::new_v4();
@@ -230,20 +232,21 @@ async fn auth_github_callback(
     .fetch_one(&state.pool)
     .await?;
 
-    sqlx::query("update user_sessions set revoked_at = $2, github_access_token = null where user_id = $1 and revoked_at is null")
+    sqlx::query("update user_sessions set revoked_at = $2, github_access_token = null, github_access_token_encrypted = null where user_id = $1 and revoked_at is null")
         .bind(current_user_id)
         .bind(now)
         .execute(&state.pool)
         .await?;
 
     let session_token = build_token(64);
+    let session_token_digest = digest_session_token(&session_token);
     sqlx::query(
-        "insert into user_sessions (id, user_id, session_token, github_access_token, expires_at, created_at, revoked_at) values ($1, $2, $3, $4, $5, $6, null)",
+        "insert into user_sessions (id, user_id, session_token, github_access_token, github_access_token_encrypted, expires_at, created_at, revoked_at) values ($1, $2, $3, null, $4, $5, $6, null)",
     )
     .bind(Uuid::new_v4())
     .bind(current_user_id)
-    .bind(&session_token)
-    .bind(&access_token)
+    .bind(session_token_digest)
+    .bind(encrypted_access_token)
     .bind(now + Duration::days(30))
     .bind(now)
     .execute(&state.pool)
@@ -280,8 +283,8 @@ async fn auth_logout(
     jar: CookieJar,
 ) -> ApiResult<(CookieJar, StatusCode)> {
     if let Some(token) = jar.get(&state.config.session_cookie_name) {
-        sqlx::query("update user_sessions set revoked_at = $2, github_access_token = null where session_token = $1 and revoked_at is null")
-            .bind(token.value())
+        sqlx::query("update user_sessions set revoked_at = $2, github_access_token = null, github_access_token_encrypted = null where session_token = $1 and revoked_at is null")
+            .bind(digest_session_token(token.value()))
             .bind(Utc::now())
             .execute(&state.pool)
             .await?;
@@ -2003,18 +2006,25 @@ async fn require_current_user(state: &AppState, jar: &CookieJar) -> ApiResult<Cu
 
     let row: Option<CurrentUserRow> = sqlx::query_as(
         r#"
-        select u.id, u.github_user_id, u.github_login, s.github_access_token
+        select u.id, u.github_user_id, u.github_login,
+               s.github_access_token_encrypted as github_access_token
         from user_sessions s
         join users u on u.id = s.user_id
         where s.session_token = $1 and s.revoked_at is null and s.expires_at > $2
         "#,
     )
-    .bind(session_cookie.value())
+    .bind(digest_session_token(session_cookie.value()))
     .bind(Utc::now())
     .fetch_optional(&state.pool)
     .await?;
 
-    row.ok_or(ApiError::Unauthenticated)
+    let mut row = row.ok_or(ApiError::Unauthenticated)?;
+    row.github_access_token = row
+        .github_access_token
+        .as_deref()
+        .map(|token| state.token_cipher.decrypt(token))
+        .transpose()?;
+    Ok(row)
 }
 
 async fn require_repo_owner(
@@ -2400,6 +2410,7 @@ mod tests {
             api_base_url: "https://sitg.io".to_string(),
             github_client_id: None,
             github_client_secret: None,
+            token_encryption_key: crate::config::TokenEncryptionKey::from_bytes([7_u8; 32]),
             session_cookie_name: "sitg_session".to_string(),
             blocked_unlink_wallets: vec![],
             base_rpc_url: "https://mainnet.base.org".to_string(),
@@ -2512,6 +2523,7 @@ mod tests {
             .run(&pool)
             .await
             .expect("apply migrations");
+        let state = Arc::new(AppState::new(pool.clone(), test_config(&database_url)));
 
         let user_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
@@ -2529,24 +2541,36 @@ mod tests {
         .await
         .expect("insert test user");
         sqlx::query(
-            "insert into user_sessions (id, user_id, session_token, github_access_token, expires_at, created_at, revoked_at) values ($1, $2, $3, null, $4, $5, null)",
+            "insert into user_sessions (id, user_id, session_token, github_access_token, github_access_token_encrypted, expires_at, created_at, revoked_at) values ($1, $2, $3, null, $4, $5, $6, null)",
         )
         .bind(session_id)
         .bind(user_id)
-        .bind(&session_token)
+        .bind(digest_session_token(&session_token))
+        .bind(
+            state
+                .token_cipher
+                .encrypt("gho_route_test_token")
+                .expect("encrypt route test token"),
+        )
         .bind(now + Duration::hours(1))
         .bind(now)
         .execute(&pool)
         .await
         .expect("insert test session");
 
-        let state = Arc::new(AppState::new(pool.clone(), test_config(&database_url)));
         let session_jar = || {
             CookieJar::new().add(Cookie::new(
                 state.config.session_cookie_name.clone(),
                 session_token.clone(),
             ))
         };
+        let current_user = require_current_user(&state, &session_jar())
+            .await
+            .expect("load current user from hashed session token");
+        assert_eq!(
+            current_user.github_access_token.as_deref(),
+            Some("gho_route_test_token")
+        );
 
         for _ in 0..25 {
             let _ = me(State(Arc::clone(&state)), session_jar())
