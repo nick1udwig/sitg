@@ -181,7 +181,7 @@ Indexes:
 - `created_at timestamptz not null`
 
 Indexes:
-- `(source, pair, fetched_at desc)` for latest quote lookup.
+- `(pair, fetched_at desc)` for fresh and recent quote lookup.
 
 ## Important constraints
 
@@ -197,8 +197,9 @@ Indexes:
 - If author is whitelisted at deadline, do not close.
 
 4. USD input conversion caching
-- On USD mode save, backend should try live CoinGecko quote first.
-- If live fetch fails, backend uses latest cached quote if available (even if stale).
+- On USD mode save, backend should reuse a quote while its five-minute cache entry is fresh.
+- After expiry, backend should try CoinGecko and then Coinbase for a live replacement.
+- If both providers fail, backend may use the latest cached quote only while it is at most 15 minutes old.
 - Selected quote should be linked via `repo_configs.spot_quote_id`.
 
 5. Retention

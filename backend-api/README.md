@@ -43,6 +43,7 @@ GitHub OAuth notes:
 - `migrations/0007_centralized_bot_reset.sql`
 - `migrations/0008_bot_action_reliability.sql`
 - `migrations/0009_internal_request_signatures.sql`
+- `migrations/0010_quote_cache_lookup.sql`
 
 Note: service startup also runs embedded migrations automatically.
 

@@ -81,10 +81,11 @@ Request (USD mode):
 ```
 
 Behavior:
-- If `USD`, backend fetches CoinGecko spot ETH/USD and computes `threshold_wei`.
-- CoinGecko spot cache TTL is `5 minutes`.
-- If live fetch fails, backend uses the last cached spot price.
-- If live fetch fails and no cached quote exists, config save fails with `503 PRICE_UNAVAILABLE`.
+- If `USD`, backend resolves spot ETH/USD from CoinGecko with Coinbase fallback and computes `threshold_wei`.
+- The ETH/USD spot cache TTL is `5 minutes`.
+- Requests reuse a fresh cached quote before calling an external price provider.
+- If live fetch fails, backend may use a cached quote fetched within the last `15 minutes`.
+- If live fetch fails and no sufficiently recent cached quote exists, config save fails with `503 PRICE_UNAVAILABLE`.
 - Backend stores both original input and computed ETH threshold.
 
 Response:

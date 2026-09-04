@@ -39,7 +39,7 @@ This checklist tracks what is currently covered by automated tests and what is s
 
 - Real GitHub OAuth provider integration (`/auth/github/callback` token exchange + user fetch against live GitHub).
 - Real GitHub API side effects (live PR comments/close) beyond local mock API behavior.
-- Real CoinGecko quote retrieval path and cache fallback behavior under live outage conditions.
+- Real CoinGecko provider integration (cache reuse, concurrent refresh, and bounded outage fallback are covered against a controlled HTTP provider and Postgres).
 - Browser-level E2E in a real headless browser engine for full rendering/network stack validation.
   - Current FE coverage uses Vitest + jsdom interaction tests (high-value logic coverage, not full browser engine).
 - Multi-replica/distributed bot-worker behavior under concurrent claims and restarts.
@@ -48,5 +48,5 @@ This checklist tracks what is currently covered by automated tests and what is s
 ## Recommended next coverage increments
 
 1. Add browser-engine E2E (Playwright) for Owner/Wallet/Gate journeys against local harness stack.
-2. Add fault-injection tests for quote service fallback and GitHub API transient failures.
+2. Add fault-injection tests for GitHub API transient failures.
 3. Add concurrent worker claim tests against one shared backend database.
