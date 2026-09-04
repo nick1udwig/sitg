@@ -8,6 +8,13 @@
 
 ## Tables
 
+### `oauth_states`, `user_sessions`, and `wallet_link_challenges`
+
+- OAuth states are removed after expiration.
+- Sessions are removed after expiration or revocation.
+- Wallet-link challenges are removed after use or expiration.
+- Cleanup lookup expressions are indexed and cleanup runs in bounded batches.
+
 ### `users`
 
 - `id uuid pk`
@@ -120,6 +127,8 @@ Indexes/constraints:
 - `used_at timestamptz null`
 - `created_at timestamptz not null`
 
+Used or expired challenge nonces are removed by bounded retention cleanup.
+
 ### `pr_confirmations`
 
 - `id uuid pk`
@@ -170,6 +179,7 @@ Indexes:
 - `(status, available_at, created_at)` for ready-to-claim scans.
 - `(claimed_at)` for expired claim-lease scans.
 - `(github_repo_id, github_pr_number)` for action lookup.
+- `(coalesce(completed_at, updated_at), id)` for retention of terminal actions.
 
 ### `spot_quotes`
 
@@ -183,6 +193,7 @@ Indexes:
 
 Indexes:
 - `(pair, fetched_at desc)` for fresh and recent quote lookup.
+- `(fetched_at, id)` for retention of unreferenced historical quotes.
 
 ## Important constraints
 
@@ -206,6 +217,10 @@ Indexes:
 5. Retention
 - Retain rows in `audit_events` and `pr_confirmations` for 12 months.
 - After 12 months, delete or anonymize per ops policy.
+- Retain GitHub delivery dedupe rows for 30 days and terminal bot actions for 90 days.
+- Remove internal replay rows after 2 days and unreferenced quote-cache rows after 24 hours.
+- Remove expired/revoked short-lived authentication and nonce rows hourly.
+- Every cleanup target is limited to 10,000 rows per replica and pass.
 
 6. Tenant-scoped bot auth
 - Every internal bot request resolves to a `bot_client` via `bot_client_keys.key_id`.

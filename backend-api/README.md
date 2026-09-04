@@ -45,6 +45,7 @@ GitHub OAuth notes:
 - `migrations/0009_internal_request_signatures.sql`
 - `migrations/0010_quote_cache_lookup.sql`
 - `migrations/0011_pending_challenge_deadlines.sql`
+- `migrations/0012_retention_cleanup_indexes.sql`
 
 Note: service startup also runs embedded migrations automatically.
 
@@ -87,4 +88,6 @@ Service auth model:
 ## Background Jobs
 
 - Deadline sweeper: marks stale `PENDING` challenges and enqueues `bot_actions`.
-- Retention cleanup: deletes `audit_events` + `pr_confirmations` older than 12 months.
+- Retention cleanup: hourly, bounded deletion of expired auth/nonces, replay and delivery
+  dedupe rows, terminal outbox rows older than 90 days, unreferenced quotes older than
+  24 hours, and `audit_events` + `pr_confirmations` older than 12 months.

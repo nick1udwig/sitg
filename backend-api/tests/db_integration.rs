@@ -49,6 +49,11 @@ async fn apply_migrations(pool: &PgPool) {
     ))
     .await
     .expect("apply 0011");
+    pool.execute(include_str!(
+        "../migrations/0012_retention_cleanup_indexes.sql"
+    ))
+    .await
+    .expect("apply 0012");
 }
 
 #[tokio::test]
