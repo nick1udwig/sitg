@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAccount, usePublicClient, useSignMessage, useSignTypedData, useSwitchChain, useWriteContract } from 'wagmi';
 import {
@@ -27,6 +27,7 @@ const STATUS_STYLES: Record<string, { dot: string; badge: string }> = {
   TIMED_OUT_CLOSED: { dot: 'red', badge: 'err' },
   CANCELED: { dot: 'red', badge: 'err' }
 };
+export const GATE_POLL_INTERVAL_MS = 5_000;
 
 function countdownMinutes(countdown: string): number {
   const parts = countdown.split(':');
@@ -114,6 +115,7 @@ export function GatePage() {
   const { state, runBusy, isBusy, pushNotice } = useAppState();
   const [gate, setGate] = useState<GateResponse | null>(null);
   const [gateError, setGateError] = useState<string | null>(null);
+  const latestGateStatus = useRef<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [stakeStatus, setStakeStatus] = useState<StakeStatusResponse | null>(null);
   const [walletLinkStatus, setWalletLinkStatus] = useState<WalletLinkStatusResponse | null>(null);
@@ -133,23 +135,56 @@ export function GatePage() {
     }
 
     let mounted = true;
-    void getGate(gateToken)
-      .then((result) => {
+    let hasLoadedGate = false;
+    let pollTimer: number | undefined;
+    latestGateStatus.current = null;
+    setGate(null);
+    setGateError(null);
+
+    const refreshGate = async (): Promise<void> => {
+      try {
+        const result = await getGate(gateToken);
         if (!mounted) {
           return;
         }
+        if (
+          latestGateStatus.current !== null
+          && latestGateStatus.current !== 'PENDING'
+          && result.status === 'PENDING'
+        ) {
+          return;
+        }
+        hasLoadedGate = true;
+        latestGateStatus.current = result.status;
         setGate(result);
-      })
-      .catch((error) => {
+        setGateError(null);
+      } catch (error) {
         if (!mounted) {
           return;
         }
-        setGateError(toUserMessage(error));
-        pushNotice('error', toUserMessage(error));
-      });
+        if (!hasLoadedGate) {
+          const message = toUserMessage(error);
+          setGateError(message);
+          pushNotice('error', message);
+        }
+      }
+
+      if (mounted && latestGateStatus.current === 'PENDING') {
+        pollTimer = window.setTimeout(() => {
+          if (latestGateStatus.current === 'PENDING') {
+            void refreshGate();
+          }
+        }, GATE_POLL_INTERVAL_MS);
+      }
+    };
+
+    void refreshGate();
 
     return () => {
       mounted = false;
+      if (pollTimer !== undefined) {
+        window.clearTimeout(pollTimer);
+      }
     };
   }, [gateToken, pushNotice]);
 
@@ -503,6 +538,7 @@ export function GatePage() {
 
     pushNotice('success', 'PR verified.');
     const refreshed = await getGate(gateToken);
+    latestGateStatus.current = refreshed.status;
     setGate(refreshed);
   };
 
