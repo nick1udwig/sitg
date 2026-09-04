@@ -1,5 +1,6 @@
 import { getDefaultConfig } from '@rainbow-me/rainbowkit';
 import { base } from 'wagmi/chains';
+export { SUPPORTED_CHAIN_ID } from './chains';
 
 const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID;
 if (!projectId) {
@@ -13,5 +14,3 @@ export const wagmiConfig = getDefaultConfig({
   chains: [base],
   ssr: false
 });
-
-export const SUPPORTED_CHAIN_ID = base.id;

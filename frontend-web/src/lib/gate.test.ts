@@ -28,18 +28,24 @@ describe('gateBlockingMessage', () => {
   };
 
   it('requires sign in', () => {
-    expect(gateBlockingMessage(gate, null)).toContain('Sign in');
+    expect(gateBlockingMessage(gate, null, new Date('2029-01-01T00:00:00Z').getTime())).toContain('Sign in');
   });
 
   it('rejects wrong user', () => {
     expect(
-      gateBlockingMessage(gate, { id: 'u', github_user_id: 4, github_login: 'bob' })
+      gateBlockingMessage(gate, { id: 'u', github_user_id: 4, github_login: 'bob' }, new Date('2029-01-01T00:00:00Z').getTime())
     ).toContain('Wrong GitHub account');
   });
 
   it('returns null when allowed', () => {
     expect(
-      gateBlockingMessage(gate, { id: 'u', github_user_id: 3, github_login: 'alice' })
+      gateBlockingMessage(gate, { id: 'u', github_user_id: 3, github_login: 'alice' }, new Date('2029-01-01T00:00:00Z').getTime())
     ).toBeNull();
+  });
+
+  it('blocks pending challenges after their deadline', () => {
+    expect(
+      gateBlockingMessage(gate, { id: 'u', github_user_id: 3, github_login: 'alice' }, new Date('2030-01-01T00:00:01Z').getTime())
+    ).toBe('This challenge has expired.');
   });
 });

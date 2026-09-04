@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::{
     app::AppState,
+    config::STAKING_CHAIN_ID,
     error::{ApiError, ApiResult},
     models::{
         api::{
@@ -29,7 +30,7 @@ use crate::{
             InternalPrEventRequest, InternalPrEventResponse, MeResponse, RepoConfigPutRequest,
             RepoConfigResponse, RepoGithubAppStatusResponse, RepoOptionResponse,
             ResolveLoginsRequest, ResolveLoginsResponse, ResolvedLogin, StakeStatusQuery,
-            StakeStatusResponse, ThresholdResponse,
+            StakeStatusResponse, StakingConfigResponse, ThresholdResponse,
             TypedDataDomain, TypedDataMessage, WalletLinkChallengeResponse,
             WalletLinkConfirmRequest, WalletLinkConfirmResponse, WalletLinkStatusResponse,
             WhitelistPutRequest,
@@ -85,6 +86,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/wallet/link/challenge", post(wallet_link_challenge))
         .route("/api/v1/wallet/link/confirm", post(wallet_link_confirm))
         .route("/api/v1/wallet/link", get(wallet_link_status).delete(wallet_unlink))
+        .route("/api/v1/staking/config", get(get_staking_config))
         .route("/api/v1/stake/status", get(get_stake_status))
         .route(
             "/internal/v2/github/events/pull-request",
@@ -716,6 +718,12 @@ async fn get_gate_confirm_typed_data(
     if user.github_user_id != challenge.github_pr_author_id {
         return Err(ApiError::Forbidden);
     }
+    if challenge.status != "PENDING" {
+        return Err(ApiError::Conflict("CHALLENGE_NOT_PENDING"));
+    }
+    if Utc::now() > challenge.deadline_at {
+        return Err(ApiError::Conflict("CHALLENGE_EXPIRED"));
+    }
 
     let nonce_row: Option<WalletLinkChallengeRow> = sqlx::query_as(
         "select nonce, expires_at from challenge_nonces where challenge_id = $1 and used_at is null",
@@ -725,17 +733,16 @@ async fn get_gate_confirm_typed_data(
     .await?;
 
     let nonce_row = nonce_row.ok_or(ApiError::NotFound)?;
+    if Utc::now() > nonce_row.expires_at {
+        return Err(ApiError::Conflict("NONCE_INVALID"));
+    }
 
     Ok(Json(ConfirmTypedDataResponse {
         domain: TypedDataDomain {
             name: "SITG".to_string(),
             version: "1".to_string(),
-            chain_id: 8453,
-            verifying_contract: state
-                .config
-                .staking_contract_address
-                .clone()
-                .unwrap_or_else(|| "0x0000000000000000000000000000000000000000".to_string()),
+            chain_id: STAKING_CHAIN_ID,
+            verifying_contract: state.config.staking_contract_address.clone(),
         },
         primary_type: "PRGateConfirmation".to_string(),
         message: TypedDataMessage {
@@ -816,14 +823,10 @@ async fn post_gate_confirm(
     .await?;
     let linked_wallet = linked_wallet.ok_or(ApiError::Conflict("WALLET_NOT_LINKED"))?;
 
-    let verifying_contract = state
-        .config
-        .staking_contract_address
-        .as_deref()
-        .ok_or_else(|| ApiError::validation("STAKING_CONTRACT_ADDRESS is not configured"))?;
+    let verifying_contract = &state.config.staking_contract_address;
 
     let signer = recover_eip712_pr_confirmation_address(
-        8453,
+        STAKING_CHAIN_ID,
         verifying_contract,
         challenge.github_pr_author_id,
         challenge.github_repo_id,
@@ -1159,6 +1162,15 @@ async fn get_stake_status(
         unlock_time,
         lock_active,
     }))
+}
+
+async fn get_staking_config(
+    State(state): State<Arc<AppState>>,
+) -> Json<StakingConfigResponse> {
+    Json(StakingConfigResponse {
+        chain_id: STAKING_CHAIN_ID,
+        contract_address: state.config.staking_contract_address.clone(),
+    })
 }
 
 async fn internal_v2_pr_events(

@@ -122,3 +122,8 @@ export interface StakeStatusResponse {
   unlock_time: string;
   lock_active: boolean;
 }
+
+export interface StakingConfigResponse {
+  chain_id: number;
+  contract_address: string;
+}

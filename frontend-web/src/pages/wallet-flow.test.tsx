@@ -1,17 +1,21 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppStateProvider, useAppState } from '../state';
 
 const wagmiMocks = vi.hoisted(() => ({
   account: { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', chainId: 1 },
+  publicClient: { waitForTransactionReceipt: vi.fn() },
   signMessageAsync: vi.fn(),
-  switchChainAsync: vi.fn()
+  switchChainAsync: vi.fn(),
+  writeContractAsync: vi.fn()
 }));
 
 const apiMocks = vi.hoisted(() => ({
   confirmWalletLink: vi.fn(),
+  getStakeStatus: vi.fn(),
+  getStakingConfig: vi.fn(),
   getWalletLinkStatus: vi.fn(),
   githubSignIn: vi.fn(),
   requestWalletLinkChallenge: vi.fn(),
@@ -20,9 +24,11 @@ const apiMocks = vi.hoisted(() => ({
 
 vi.mock('wagmi', () => ({
   useAccount: () => wagmiMocks.account,
+  usePublicClient: () => wagmiMocks.publicClient,
   useSignMessage: () => ({ signMessageAsync: wagmiMocks.signMessageAsync }),
   useSignTypedData: () => ({ signTypedDataAsync: vi.fn() }),
-  useSwitchChain: () => ({ switchChainAsync: wagmiMocks.switchChainAsync })
+  useSwitchChain: () => ({ switchChainAsync: wagmiMocks.switchChainAsync }),
+  useWriteContract: () => ({ writeContractAsync: wagmiMocks.writeContractAsync })
 }));
 
 vi.mock('../lib/wagmi', () => ({
@@ -63,11 +69,27 @@ function renderAuthedContributorPage() {
 }
 
 describe('ContributorPage flow', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     wagmiMocks.account = { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', chainId: 1 };
     wagmiMocks.signMessageAsync.mockResolvedValue('0xsigned-message');
     wagmiMocks.switchChainAsync.mockResolvedValue(undefined);
+    wagmiMocks.writeContractAsync.mockResolvedValue('0xwithdraw-hash');
+    wagmiMocks.publicClient.waitForTransactionReceipt.mockResolvedValue({ status: 'success' });
+
+    apiMocks.getStakingConfig.mockResolvedValue({
+      chain_id: 8453,
+      contract_address: '0x1111111111111111111111111111111111111111'
+    });
+    apiMocks.getStakeStatus.mockResolvedValue({
+      staked_balance_wei: '0',
+      unlock_time: '1970-01-01T00:00:00Z',
+      lock_active: false
+    });
 
     apiMocks.getWalletLinkStatus
       .mockResolvedValueOnce(null)
@@ -126,5 +148,42 @@ describe('ContributorPage flow', () => {
     const signIn = screen.getByRole('button', { name: 'Sign in with GitHub' });
     await user.click(signIn);
     expect(apiMocks.githubSignIn).toHaveBeenCalledTimes(1);
+  });
+
+  it('withdraws an unlocked stake from the configured contract', async () => {
+    apiMocks.getWalletLinkStatus.mockReset();
+    apiMocks.getWalletLinkStatus.mockResolvedValue({
+      wallet_address: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8',
+      chain_id: 8453,
+      linked_at: '2026-02-13T00:00:00Z'
+    });
+    apiMocks.getStakeStatus.mockReset();
+    apiMocks.getStakeStatus
+      .mockResolvedValueOnce({
+        staked_balance_wei: '1000000000000000000',
+        unlock_time: '2020-01-01T00:00:00Z',
+        lock_active: false
+      })
+      .mockResolvedValueOnce({
+        staked_balance_wei: '0',
+        unlock_time: '1970-01-01T00:00:00Z',
+        lock_active: false
+      });
+
+    const user = userEvent.setup();
+    renderAuthedContributorPage();
+    const withdraw = await screen.findByRole('button', { name: 'Withdraw Stake' });
+    await waitFor(() => expect((withdraw as HTMLButtonElement).disabled).toBe(false));
+    await user.click(withdraw);
+
+    await waitFor(() => {
+      expect(wagmiMocks.writeContractAsync).toHaveBeenCalledWith({
+        address: '0x1111111111111111111111111111111111111111',
+        abi: expect.any(Array),
+        functionName: 'withdraw'
+      });
+      expect(wagmiMocks.publicClient.waitForTransactionReceipt).toHaveBeenCalledWith({ hash: '0xwithdraw-hash' });
+      expect(screen.getByText('No active stake')).toBeTruthy();
+    });
   });
 });

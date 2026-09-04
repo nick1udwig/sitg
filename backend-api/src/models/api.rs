@@ -186,6 +186,12 @@ pub struct StakeStatusResponse {
     pub lock_active: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct StakingConfigResponse {
+    pub chain_id: u64,
+    pub contract_address: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct InternalPrEventRequest {
     pub delivery_id: String,

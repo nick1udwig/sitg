@@ -1,18 +1,30 @@
 import { useEffect, useState } from 'react';
-import { useAccount, useSignMessage, useSwitchChain } from 'wagmi';
+import { useAccount, usePublicClient, useSignMessage, useSwitchChain, useWriteContract } from 'wagmi';
 import {
   confirmWalletLink,
+  getStakeStatus,
+  getStakingConfig,
   getWalletLinkStatus,
   githubSignIn,
   requestWalletLinkChallenge,
   unlinkWallet
 } from '../api';
 import { toUserMessage } from '../lib/error-map';
+import { stakingContractAddress } from '../lib/staking';
 import { SUPPORTED_CHAIN_ID } from '../lib/wagmi';
 import { useAppState } from '../state';
-import type { WalletLinkStatusResponse } from '../types';
+import type { StakeStatusResponse, StakingConfigResponse, WalletLinkStatusResponse } from '../types';
 
 const CHAIN_NAMES: Record<number, string> = { 8453: 'Base', 84532: 'Base Sepolia' };
+const STAKING_ABI = [
+  {
+    type: 'function',
+    name: 'withdraw',
+    stateMutability: 'nonpayable',
+    inputs: [],
+    outputs: []
+  }
+] as const;
 
 function truncateAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -23,7 +35,12 @@ export function ContributorPage() {
   const account = useAccount();
   const { signMessageAsync } = useSignMessage();
   const { switchChainAsync } = useSwitchChain();
+  const publicClient = usePublicClient({ chainId: SUPPORTED_CHAIN_ID });
+  const { writeContractAsync } = useWriteContract();
   const [walletLinkStatus, setWalletLinkStatus] = useState<WalletLinkStatusResponse | null>(null);
+  const [stakeStatus, setStakeStatus] = useState<StakeStatusResponse | null>(null);
+  const [stakingConfig, setStakingConfig] = useState<StakingConfigResponse | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
     if (!state.me) {
@@ -42,6 +59,50 @@ export function ContributorPage() {
 
     return () => { mounted = false; };
   }, [state.me, pushNotice]);
+
+  useEffect(() => {
+    if (!state.me) {
+      setStakingConfig(null);
+      return;
+    }
+
+    let mounted = true;
+    void getStakingConfig()
+      .then((config) => {
+        stakingContractAddress(config);
+        if (mounted) setStakingConfig(config);
+      })
+      .catch((error) => {
+        if (mounted) pushNotice('error', toUserMessage(error));
+      });
+
+    return () => { mounted = false; };
+  }, [state.me, pushNotice]);
+
+  useEffect(() => {
+    const walletAddress = walletLinkStatus?.wallet_address;
+    if (!walletAddress) {
+      setStakeStatus(null);
+      return;
+    }
+
+    let mounted = true;
+    void getStakeStatus(walletAddress)
+      .then((status) => {
+        if (mounted) setStakeStatus(status);
+      })
+      .catch((error) => {
+        if (mounted) pushNotice('error', toUserMessage(error));
+      });
+
+    return () => { mounted = false; };
+  }, [walletLinkStatus?.wallet_address, pushNotice]);
+
+  useEffect(() => {
+    if (!stakeStatus || stakeStatus.staked_balance_wei === '0') return;
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [stakeStatus]);
 
   const ensureBaseChain = async (): Promise<boolean> => {
     if (!account.chainId || account.chainId === SUPPORTED_CHAIN_ID) return true;
@@ -86,6 +147,67 @@ export function ContributorPage() {
     setWalletLinkStatus(null);
   };
 
+  const handleWithdraw = async (): Promise<void> => {
+    if (!account.address || !walletLinkStatus || !stakingConfig || !stakeStatus) {
+      pushNotice('error', 'Connect the linked wallet before withdrawing.');
+      return;
+    }
+    if (account.address.toLowerCase() !== walletLinkStatus.wallet_address.toLowerCase()) {
+      pushNotice('error', 'Connect the linked wallet before withdrawing.');
+      return;
+    }
+    let currentBalance: bigint;
+    try {
+      currentBalance = BigInt(stakeStatus.staked_balance_wei);
+    } catch {
+      pushNotice('error', 'The stake balance returned by the backend is invalid.');
+      return;
+    }
+    if (currentBalance <= 0n) {
+      pushNotice('error', 'There is no stake to withdraw.');
+      return;
+    }
+    const unlockTime = new Date(stakeStatus.unlock_time).getTime();
+    if (!Number.isFinite(unlockTime) || unlockTime > Date.now()) {
+      pushNotice('error', 'The stake is still locked.');
+      return;
+    }
+    if (!publicClient) {
+      pushNotice('error', 'Base network is unavailable. Retry after reconnecting your wallet.');
+      return;
+    }
+    if (!(await ensureBaseChain())) return;
+
+    const contractAddress = stakingContractAddress(stakingConfig);
+    const hash = await runBusy('stake-withdraw-tx', async () => {
+      pushNotice('info', 'Check your wallet to approve the withdrawal.');
+      return writeContractAsync({
+        address: contractAddress,
+        abi: STAKING_ABI,
+        functionName: 'withdraw'
+      });
+    });
+    if (!hash) return;
+
+    const receipt = await runBusy('stake-withdraw-receipt', async () => {
+      pushNotice('info', 'Waiting for withdrawal confirmation...');
+      const confirmedReceipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (confirmedReceipt.status !== 'success') {
+        throw new Error('The withdrawal transaction reverted.');
+      }
+      return confirmedReceipt;
+    });
+    if (!receipt) return;
+
+    const refreshed = await getStakeStatus(walletLinkStatus.wallet_address).catch(() => null);
+    setStakeStatus(refreshed ?? {
+      staked_balance_wei: '0',
+      unlock_time: new Date(0).toISOString(),
+      lock_active: false
+    });
+    pushNotice('success', 'Stake withdrawn.');
+  };
+
   if (!state.me) {
     return (
       <div className="auth-prompt">
@@ -105,6 +227,26 @@ export function ContributorPage() {
   }
 
   const chainName = account.chainId ? (CHAIN_NAMES[account.chainId] ?? `Chain ${account.chainId}`) : 'Unknown';
+  const stakeBalance = (() => {
+    try {
+      return BigInt(stakeStatus?.staked_balance_wei ?? '0');
+    } catch {
+      return 0n;
+    }
+  })();
+  const lockEndsAt = stakeStatus ? new Date(stakeStatus.unlock_time).getTime() : 0;
+  const lockActive = stakeBalance > 0n && lockEndsAt > nowMs;
+  const connectedWalletIsLinked = Boolean(
+    account.address
+    && walletLinkStatus?.wallet_address
+    && account.address.toLowerCase() === walletLinkStatus.wallet_address.toLowerCase()
+  );
+  const canWithdraw = Boolean(
+    stakingConfig
+    && connectedWalletIsLinked
+    && stakeBalance > 0n
+    && !lockActive
+  );
 
   return (
     <section className="grid" style={{ maxWidth: 600, margin: '0 auto' }}>
@@ -130,14 +272,34 @@ export function ContributorPage() {
           </dd>
           <dt>Chain</dt>
           <dd>{chainName}</dd>
+          <dt>Staked balance</dt>
+          <dd>{stakeStatus ? `${stakeStatus.staked_balance_wei} wei` : 'No linked-wallet stake found'}</dd>
+          <dt>Stake lock</dt>
+          <dd>
+            {stakeBalance > 0n
+              ? lockActive
+                ? `Locked until ${new Date(stakeStatus!.unlock_time).toLocaleString()}`
+                : 'Unlocked'
+              : 'No active stake'}
+          </dd>
         </dl>
 
         <div className="row-wrap">
           <button disabled={!state.me || !account.address || isBusy('wallet-link')} onClick={handleLink}>
             {isBusy('wallet-link') ? 'Linking...' : 'Link Wallet'}
           </button>
-          <button className="warn" disabled={!state.me || isBusy('wallet-unlink')} onClick={handleUnlink}>
-            {isBusy('wallet-unlink') ? 'Unlinking...' : 'Unlink Wallet'}
+          <button className="warn" disabled={!state.me || stakeBalance > 0n || isBusy('wallet-unlink')} onClick={handleUnlink}>
+            {isBusy('wallet-unlink') ? 'Unlinking...' : stakeBalance > 0n ? 'Withdraw Before Unlinking' : 'Unlink Wallet'}
+          </button>
+          <button
+            disabled={!canWithdraw || isBusy('stake-withdraw-tx') || isBusy('stake-withdraw-receipt') || isBusy('switch-chain')}
+            onClick={handleWithdraw}
+          >
+            {isBusy('stake-withdraw-receipt')
+              ? 'Confirming...'
+              : isBusy('stake-withdraw-tx')
+                ? 'Submitting...'
+                : 'Withdraw Stake'}
           </button>
         </div>
       </article>

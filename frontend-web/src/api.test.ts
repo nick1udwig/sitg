@@ -5,6 +5,7 @@ import {
   getMe,
   getOwnedRepos,
   getStakeStatus,
+  getStakingConfig,
   getWalletLinkStatus,
   putRepoConfig,
   requestWalletLinkChallenge,
@@ -66,6 +67,19 @@ describe('api client', () => {
 
     const result = await requestWalletLinkChallenge();
     expect(result.nonce).toBe('123');
+  });
+
+  it('loads the authoritative staking configuration', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      mockJsonResponse(200, {
+        chain_id: 8453,
+        contract_address: '0x1111111111111111111111111111111111111111'
+      })
+    );
+
+    const config = await getStakingConfig();
+    expect(config.chain_id).toBe(8453);
+    expect(fetchSpy.mock.calls[0][0]).toContain('/api/v1/staking/config');
   });
 
   it('submits gate signature', async () => {

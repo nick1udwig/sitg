@@ -13,8 +13,8 @@ use crate::{
 #[derive(Clone)]
 pub struct StakeService {
     client: Client,
-    rpc_url: Option<String>,
-    contract_address: Option<String>,
+    rpc_url: String,
+    contract_address: String,
     blocked_unlink_wallets: Vec<String>,
 }
 
@@ -69,15 +69,6 @@ impl StakeService {
         function_sig: &str,
         wallet_address: &str,
     ) -> ApiResult<String> {
-        let rpc_url = self
-            .rpc_url
-            .as_ref()
-            .ok_or_else(|| ApiError::validation("BASE_RPC_URL is not configured"))?;
-        let contract = self
-            .contract_address
-            .as_ref()
-            .ok_or_else(|| ApiError::validation("STAKING_CONTRACT_ADDRESS is not configured"))?;
-
         let data = encode_call_data(function_sig, wallet_address)?;
         let body = json!({
           "jsonrpc": "2.0",
@@ -85,7 +76,7 @@ impl StakeService {
           "method": "eth_call",
           "params": [
             {
-              "to": contract,
+              "to": &self.contract_address,
               "data": data
             },
             "latest"
@@ -94,7 +85,7 @@ impl StakeService {
 
         let response = self
             .client
-            .post(rpc_url)
+            .post(&self.rpc_url)
             .json(&body)
             .send()
             .await
@@ -166,8 +157,8 @@ mod tests {
             github_client_secret: None,
             session_cookie_name: "sitg_session".to_string(),
             blocked_unlink_wallets,
-            base_rpc_url: None,
-            staking_contract_address: None,
+            base_rpc_url: "https://mainnet.base.org".to_string(),
+            staking_contract_address: "0x1111111111111111111111111111111111111111".to_string(),
         }
     }
 

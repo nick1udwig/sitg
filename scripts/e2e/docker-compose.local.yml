@@ -40,6 +40,8 @@ services:
       PORT: "8080"
       APP_BASE_URL: http://localhost:5173
       API_BASE_URL: "http://localhost:${LOCAL_E2E_BACKEND_PORT:-18080}"
+      BASE_RPC_URL: "${BASE_RPC_URL:-https://mainnet.base.org}"
+      STAKING_CONTRACT_ADDRESS: "${STAKING_CONTRACT_ADDRESS:-0xd195Ce907655363F59283e34136aDcC36AC54e8F}"
       RUST_LOG: info
     ports:
       - "${LOCAL_E2E_BACKEND_PORT:-18080}:8080"

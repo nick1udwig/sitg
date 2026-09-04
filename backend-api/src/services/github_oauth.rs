@@ -285,8 +285,8 @@ mod tests {
             github_client_secret: Some("secret".to_string()),
             session_cookie_name: "sitg_session".to_string(),
             blocked_unlink_wallets: vec![],
-            base_rpc_url: None,
-            staking_contract_address: None,
+            base_rpc_url: "https://mainnet.base.org".to_string(),
+            staking_contract_address: "0x1111111111111111111111111111111111111111".to_string(),
         }
     }
 

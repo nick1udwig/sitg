@@ -9,6 +9,7 @@ import type {
   RepoConfigResponse,
   RepoOption,
   ResolveLoginsResponse,
+  StakingConfigResponse,
   StakeStatusResponse,
   WalletLinkChallengeResponse,
   WalletLinkConfirmResponse,
@@ -200,6 +201,10 @@ export function getWalletLinkStatus(): Promise<WalletLinkStatusResponse | null> 
 
 export function getStakeStatus(walletAddress: string): Promise<StakeStatusResponse | null> {
   return requestOptional<StakeStatusResponse>(`/api/v1/stake/status?wallet=${encodeURIComponent(walletAddress)}`);
+}
+
+export function getStakingConfig(): Promise<StakingConfigResponse> {
+  return request<StakingConfigResponse>('/api/v1/staking/config');
 }
 
 export function unlinkWallet(): Promise<void> {

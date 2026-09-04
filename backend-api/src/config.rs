@@ -1,5 +1,19 @@
 use std::env;
 
+use thiserror::Error;
+
+pub const STAKING_CHAIN_ID: u64 = 8453;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("{0} is required")]
+    Missing(&'static str),
+    #[error("{0} must be an absolute http(s) URL")]
+    InvalidUrl(&'static str),
+    #[error("STAKING_CONTRACT_ADDRESS must be a non-zero 20-byte hex address")]
+    InvalidStakingContractAddress,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub host: String,
@@ -12,12 +26,12 @@ pub struct Config {
     pub github_client_secret: Option<String>,
     pub session_cookie_name: String,
     pub blocked_unlink_wallets: Vec<String>,
-    pub base_rpc_url: Option<String>,
-    pub staking_contract_address: Option<String>,
+    pub base_rpc_url: String,
+    pub staking_contract_address: String,
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self, env::VarError> {
+    pub fn from_env() -> Result<Self, ConfigError> {
         let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
         let port = env::var("PORT")
             .ok()
@@ -42,9 +56,18 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(str::to_lowercase)
             .collect::<Vec<_>>();
-        let base_rpc_url = env::var("BASE_RPC_URL").ok();
-        let staking_contract_address = env::var("STAKING_CONTRACT_ADDRESS").ok();
-        let database_url = env::var("DATABASE_URL")?;
+        let database_url = required_env("DATABASE_URL")?;
+        let base_rpc_url = required_env("BASE_RPC_URL")?;
+        let rpc_url = reqwest::Url::parse(&base_rpc_url)
+            .map_err(|_| ConfigError::InvalidUrl("BASE_RPC_URL"))?;
+        if !matches!(rpc_url.scheme(), "http" | "https") || rpc_url.host().is_none() {
+            return Err(ConfigError::InvalidUrl("BASE_RPC_URL"));
+        }
+
+        let staking_contract_address = required_env("STAKING_CONTRACT_ADDRESS")?;
+        if !is_nonzero_evm_address(&staking_contract_address) {
+            return Err(ConfigError::InvalidStakingContractAddress);
+        }
 
         Ok(Self {
             host,
@@ -61,6 +84,22 @@ impl Config {
             staking_contract_address,
         })
     }
+}
+
+fn required_env(name: &'static str) -> Result<String, ConfigError> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or(ConfigError::Missing(name))
+}
+
+fn is_nonzero_evm_address(value: &str) -> bool {
+    let value = value.trim();
+    value.len() == 42
+        && value.starts_with("0x")
+        && value[2..].chars().all(|c| c.is_ascii_hexdigit())
+        && value[2..].chars().any(|c| c != '0')
 }
 
 #[cfg(test)]
@@ -133,6 +172,11 @@ mod tests {
 
         unsafe {
             env::set_var("DATABASE_URL", "postgres://localhost/sitg");
+            env::set_var("BASE_RPC_URL", "https://mainnet.base.org");
+            env::set_var(
+                "STAKING_CONTRACT_ADDRESS",
+                "0x1111111111111111111111111111111111111111",
+            );
             env::set_var("PORT", "not-a-number");
             env::set_var("DB_MAX_CONNECTIONS", "invalid");
             env::set_var("BLOCKED_UNLINK_WALLETS", " 0xAbC , , 0xDEF,");
@@ -145,6 +189,11 @@ mod tests {
         assert_eq!(config.app_base_url, "https://sitg.io");
         assert_eq!(config.api_base_url, "http://localhost:8080");
         assert_eq!(config.session_cookie_name, "sitg_session");
+        assert_eq!(config.base_rpc_url, "https://mainnet.base.org");
+        assert_eq!(
+            config.staking_contract_address,
+            "0x1111111111111111111111111111111111111111"
+        );
         assert_eq!(
             config.blocked_unlink_wallets,
             vec!["0xabc".to_string(), "0xdef".to_string()]
@@ -158,6 +207,31 @@ mod tests {
         EnvSnapshot::clear_tracked();
 
         let err = Config::from_env().expect_err("DATABASE_URL should be required");
-        assert!(matches!(err, env::VarError::NotPresent));
+        assert!(matches!(err, ConfigError::Missing("DATABASE_URL")));
+    }
+
+    #[test]
+    fn requires_complete_staking_configuration() {
+        let _lock = env_lock().lock().expect("env lock");
+        let _snapshot = EnvSnapshot::capture();
+        EnvSnapshot::clear_tracked();
+
+        unsafe {
+            env::set_var("DATABASE_URL", "postgres://localhost/sitg");
+            env::set_var("BASE_RPC_URL", "not a URL");
+            env::set_var(
+                "STAKING_CONTRACT_ADDRESS",
+                "0x0000000000000000000000000000000000000000",
+            );
+        }
+
+        let err = Config::from_env().expect_err("invalid RPC URL should fail");
+        assert!(matches!(err, ConfigError::InvalidUrl("BASE_RPC_URL")));
+
+        unsafe {
+            env::set_var("BASE_RPC_URL", "https://mainnet.base.org");
+        }
+        let err = Config::from_env().expect_err("zero contract should fail");
+        assert!(matches!(err, ConfigError::InvalidStakingContractAddress));
     }
 }

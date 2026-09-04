@@ -12,13 +12,17 @@ export function parseCountdown(deadlineAt: string, now = Date.now()): string {
   return `${minutes}:${seconds}`;
 }
 
-export function gateBlockingMessage(gate: GateResponse, me: MeResponse | null): string | null {
+export function gateBlockingMessage(gate: GateResponse, me: MeResponse | null, now = Date.now()): string | null {
   if (gate.status === 'TIMED_OUT_CLOSED') {
     return 'This challenge expired and the PR was closed.';
   }
 
   if (gate.status === 'VERIFIED') {
     return null;
+  }
+
+  if (new Date(gate.deadline_at).getTime() <= now) {
+    return 'This challenge has expired.';
   }
 
   if (!me) {
