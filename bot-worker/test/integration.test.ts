@@ -358,7 +358,7 @@ test("outbox polling executes UPSERT_PR_COMMENT and acks SUCCEEDED", async () =>
         headers: { "content-type": "application/json" },
       });
     }
-    if (url === "https://api.github.com/repos/org/repo/issues/42/comments?per_page=100") {
+    if (url === "https://api.github.com/repos/org/repo/issues/42/comments?per_page=100&page=1") {
       return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (url === "https://api.github.com/repos/org/repo/issues/42/comments" && method === "POST") {
@@ -622,7 +622,7 @@ test("outbox polling recovers stale installation id for CLOSE_PR_WITH_COMMENT", 
         headers: { "content-type": "application/json" },
       });
     }
-    if (url === "https://api.github.com/repos/org/repo/issues/42/comments?per_page=100") {
+    if (url === "https://api.github.com/repos/org/repo/issues/42/comments?per_page=100&page=1") {
       return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (url === "https://api.github.com/repos/org/repo/issues/42/comments" && method === "POST") {

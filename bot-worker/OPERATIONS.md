@@ -37,7 +37,10 @@ Suggested alerts:
 - Bot does not provide webhook dedup correctness.
 - Backend v2 ingest endpoints own delivery dedup.
 - Backend and GitHub HTTP calls use exponential backoff retries.
+- Each HTTP attempt has a 10-second timeout, and retry response bodies are closed before retrying.
 - Comment posting uses marker-based upsert and is safe to retry.
+- Marker lookup and installation repository sync paginate up to 10,000 GitHub results and fail explicitly rather than returning a truncated result.
+- GitHub installation tokens are single-flight cached until 60 seconds before their reported expiry.
 - Close PR operation is safe if PR is already closed.
 - Each backend attempt uses a fresh UUID nonce and Ed25519 signature covering the exact request body.
 

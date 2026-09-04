@@ -27,6 +27,16 @@ type InstallationRepositoryRef = {
   full_name: string;
 };
 
+type CachedInstallationToken = {
+  token: string;
+  usableUntilMs: number;
+};
+
+const RESULTS_PER_PAGE = 100;
+const PAGINATION_PAGE_LIMIT = 100;
+const TOKEN_EXPIRY_SKEW_MS = 60_000;
+const TOKEN_FALLBACK_TTL_MS = 5 * 60_000;
+
 export class GitHubApiError extends Error {
   readonly code: string;
   readonly retryable: boolean;
@@ -77,6 +87,8 @@ export class GitHubClient {
   private readonly appId: string;
   private readonly privateKeyPem: string;
   private readonly apiBaseUrl: string;
+  private readonly installationTokenCache = new Map<number, CachedInstallationToken>();
+  private readonly installationTokenRequests = new Map<number, Promise<string>>();
 
   constructor(options: GitHubClientOptions) {
     this.appId = options.appId;
@@ -110,11 +122,11 @@ export class GitHubClient {
   async listInstallationRepositories(installationId: number): Promise<InstallationRepositoryRef[]> {
     const token = await this.getInstallationToken(installationId);
     const repositories: InstallationRepositoryRef[] = [];
-    let page = 1;
+    let fetchedCount = 0;
 
-    while (page <= 10) {
+    for (let page = 1; page <= PAGINATION_PAGE_LIMIT; page += 1) {
       const res = await fetchWithRetry(
-        `${this.apiBaseUrl}/installation/repositories?per_page=100&page=${page}`,
+        `${this.apiBaseUrl}/installation/repositories?per_page=${RESULTS_PER_PAGE}&page=${page}`,
         {
           method: "GET",
           headers: this.defaultHeaders(token),
@@ -126,19 +138,25 @@ export class GitHubClient {
 
       const body = (await res.json()) as InstallationRepositoriesResponse;
       const chunk = body.repositories ?? [];
+      fetchedCount += chunk.length;
       for (const repo of chunk) {
         if (typeof repo.id === "number" && typeof repo.full_name === "string") {
           repositories.push({ id: repo.id, full_name: repo.full_name });
         }
       }
 
-      if (chunk.length < 100) {
-        break;
+      if (
+        chunk.length < RESULTS_PER_PAGE ||
+        (typeof body.total_count === "number" && fetchedCount >= body.total_count)
+      ) {
+        return repositories;
       }
-      page += 1;
     }
 
-    return repositories;
+    throw githubProtocolError(
+      `GitHub installation repository listing exceeded ${PAGINATION_PAGE_LIMIT} pages`,
+      "GITHUB_PAGINATION_LIMIT",
+    );
   }
 
   private async upsertIssueComment(
@@ -182,18 +200,31 @@ export class GitHubClient {
     issueNumber: number,
     marker: string,
   ): Promise<CommentRecord | null> {
-    const res = await fetchWithRetry(
-      `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
-      {
-        method: "GET",
-        headers: this.defaultHeaders(token),
-      },
-    );
-    if (!res.ok) {
-      throw githubHttpError("list issue comments", res);
+    for (let page = 1; page <= PAGINATION_PAGE_LIMIT; page += 1) {
+      const res = await fetchWithRetry(
+        `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=${RESULTS_PER_PAGE}&page=${page}`,
+        {
+          method: "GET",
+          headers: this.defaultHeaders(token),
+        },
+      );
+      if (!res.ok) {
+        throw githubHttpError("list issue comments", res);
+      }
+      const comments = (await res.json()) as CommentRecord[];
+      const existing = comments.find((comment) => comment.body?.includes(marker));
+      if (existing) {
+        return existing;
+      }
+      if (comments.length < RESULTS_PER_PAGE) {
+        return null;
+      }
     }
-    const comments = (await res.json()) as CommentRecord[];
-    return comments.find((comment) => comment.body?.includes(marker)) ?? null;
+
+    throw githubProtocolError(
+      `GitHub issue comment listing exceeded ${PAGINATION_PAGE_LIMIT} pages`,
+      "GITHUB_PAGINATION_LIMIT",
+    );
   }
 
   private async resolveInstallationIdForRepo(jwt: string, repoFullName: string): Promise<number | null> {
@@ -223,31 +254,78 @@ export class GitHubClient {
   }
 
   private async getInstallationToken(installationId: number, repoFullName?: string): Promise<string> {
-    const jwt = signGitHubAppJwt(this.appId, this.privateKeyPem);
-    const requestToken = (targetInstallationId: number): Promise<Response> =>
-      fetchWithRetry(`${this.apiBaseUrl}/app/installations/${targetInstallationId}/access_tokens`, {
-        method: "POST",
-        headers: {
-          accept: "application/vnd.github+json",
-          authorization: `Bearer ${jwt}`,
-          "x-github-api-version": "2022-11-28",
-        },
-      });
+    try {
+      return await this.getInstallationTokenById(installationId);
+    } catch (error) {
+      if (!(error instanceof GitHubApiError) || error.code !== "INSTALLATION_NOT_FOUND" || !repoFullName) {
+        throw error;
+      }
 
-    let res = await requestToken(installationId);
-    if (!res.ok && res.status === 404 && repoFullName) {
+      const jwt = signGitHubAppJwt(this.appId, this.privateKeyPem);
       const resolvedInstallationId = await this.resolveInstallationIdForRepo(jwt, repoFullName);
       if (resolvedInstallationId && resolvedInstallationId !== installationId) {
-        res = await requestToken(resolvedInstallationId);
+        return this.getInstallationTokenById(resolvedInstallationId);
+      }
+      throw error;
+    }
+  }
+
+  private async getInstallationTokenById(installationId: number): Promise<string> {
+    const now = Date.now();
+    for (const [cachedInstallationId, cachedToken] of this.installationTokenCache) {
+      if (cachedToken.usableUntilMs <= now) {
+        this.installationTokenCache.delete(cachedInstallationId);
       }
     }
+    const cached = this.installationTokenCache.get(installationId);
+    if (cached && cached.usableUntilMs > now) {
+      return cached.token;
+    }
+    this.installationTokenCache.delete(installationId);
 
+    const existingRequest = this.installationTokenRequests.get(installationId);
+    if (existingRequest) {
+      return existingRequest;
+    }
+
+    const request = this.fetchInstallationToken(installationId);
+    this.installationTokenRequests.set(installationId, request);
+    try {
+      return await request;
+    } finally {
+      if (this.installationTokenRequests.get(installationId) === request) {
+        this.installationTokenRequests.delete(installationId);
+      }
+    }
+  }
+
+  private async fetchInstallationToken(installationId: number): Promise<string> {
+    const jwt = signGitHubAppJwt(this.appId, this.privateKeyPem);
+    const res = await fetchWithRetry(`${this.apiBaseUrl}/app/installations/${installationId}/access_tokens`, {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${jwt}`,
+        "x-github-api-version": "2022-11-28",
+      },
+    });
     if (!res.ok) {
       throw githubHttpError("installation token request", res);
     }
-    const body = (await res.json()) as { token: string };
+    const body = (await res.json()) as { token?: string; expires_at?: string };
     if (!body.token) {
       throw githubProtocolError("GitHub installation token response missing token");
+    }
+
+    const expiresAtMs = body.expires_at ? Date.parse(body.expires_at) : Number.NaN;
+    const usableUntilMs = Number.isFinite(expiresAtMs)
+      ? expiresAtMs - TOKEN_EXPIRY_SKEW_MS
+      : Date.now() + TOKEN_FALLBACK_TTL_MS;
+    if (usableUntilMs > Date.now()) {
+      this.installationTokenCache.set(installationId, {
+        token: body.token,
+        usableUntilMs,
+      });
     }
     return body.token;
   }
