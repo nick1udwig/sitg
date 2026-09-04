@@ -1048,21 +1048,17 @@ async fn wallet_link_confirm(
     }
 
     let mut tx = state.pool.begin().await?;
+    let linked_at = Utc::now();
 
-    sqlx::query(
-        "update wallet_link_challenges set used_at = $3 where user_id = $1 and nonce = $2 and used_at is null",
-    )
-    .bind(user.id)
-    .bind(nonce)
-    .bind(Utc::now())
-    .execute(&mut *tx)
-    .await?;
+    if !consume_wallet_link_nonce(&mut *tx, user.id, nonce, linked_at).await? {
+        return Err(ApiError::Conflict("WALLET_LINK_CHALLENGE_INVALID"));
+    }
 
     sqlx::query(
         "update wallet_links set unlinked_at = $2 where user_id = $1 and unlinked_at is null",
     )
     .bind(user.id)
-    .bind(Utc::now())
+    .bind(linked_at)
     .execute(&mut *tx)
     .await?;
 
@@ -1072,7 +1068,7 @@ async fn wallet_link_confirm(
     .bind(Uuid::new_v4())
     .bind(user.id)
     .bind(&wallet_address)
-    .bind(Utc::now())
+    .bind(linked_at)
     .execute(&mut *tx)
     .await;
 
@@ -1098,6 +1094,34 @@ async fn wallet_link_confirm(
         wallet_address,
         linked: true,
     }))
+}
+
+async fn consume_wallet_link_nonce<'e, E>(
+    executor: E,
+    user_id: Uuid,
+    nonce: Uuid,
+    consumed_at: chrono::DateTime<Utc>,
+) -> ApiResult<bool>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let result = sqlx::query(
+        r#"
+        update wallet_link_challenges
+        set used_at = $3
+        where user_id = $1
+          and nonce = $2
+          and used_at is null
+          and expires_at > $3
+        "#,
+    )
+    .bind(user_id)
+    .bind(nonce)
+    .bind(consumed_at)
+    .execute(executor)
+    .await?;
+
+    Ok(result.rows_affected() == 1)
 }
 
 async fn wallet_link_status(
@@ -2597,6 +2621,86 @@ mod tests {
             .execute(&pool)
             .await
             .expect("clean session");
+        sqlx::query("delete from users where id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("clean user");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable DATABASE_URL postgres"]
+    async fn wallet_link_nonce_can_only_be_consumed_once_concurrently() {
+        let database_url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL must be set for the route integration test");
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("connect to route test database");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("apply migrations");
+
+        let user_id = Uuid::new_v4();
+        let nonce = Uuid::new_v4();
+        let expired_nonce = Uuid::new_v4();
+        let now = truncate_to_micros(Utc::now());
+        let github_user_id = 8_100_000_000_i64 + i64::from(rand::random::<u32>());
+        sqlx::query(
+            "insert into users (id, github_user_id, github_login, created_at, updated_at) values ($1, $2, $3, $4, $4)",
+        )
+        .bind(user_id)
+        .bind(github_user_id)
+        .bind(format!("wallet-nonce-{github_user_id}"))
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert test user");
+        sqlx::query(
+            "insert into wallet_link_challenges (id, user_id, nonce, expires_at, used_at, created_at) values ($1, $2, $3, $4, null, $5), ($6, $2, $7, $8, null, $5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(user_id)
+        .bind(nonce)
+        .bind(now + Duration::minutes(5))
+        .bind(now)
+        .bind(Uuid::new_v4())
+        .bind(expired_nonce)
+        .bind(now - Duration::minutes(1))
+        .execute(&pool)
+        .await
+        .expect("insert wallet link challenges");
+
+        let first_pool = pool.clone();
+        let second_pool = pool.clone();
+        let (first, second) = tokio::join!(
+            consume_wallet_link_nonce(&first_pool, user_id, nonce, now),
+            consume_wallet_link_nonce(&second_pool, user_id, nonce, now),
+        );
+        let first = first.expect("first nonce consumption");
+        let second = second.expect("second nonce consumption");
+        assert_ne!(first, second, "exactly one concurrent consumer must win");
+
+        let used_at: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+            "select used_at from wallet_link_challenges where user_id = $1 and nonce = $2",
+        )
+        .bind(user_id)
+        .bind(nonce)
+        .fetch_one(&pool)
+        .await
+        .expect("load consumed challenge");
+        assert_eq!(used_at, Some(now));
+
+        let consumed_expired = consume_wallet_link_nonce(&pool, user_id, expired_nonce, now)
+            .await
+            .expect("expired nonce consumption");
+        assert!(!consumed_expired, "an expired nonce must remain unusable");
+
+        sqlx::query("delete from wallet_link_challenges where user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("clean wallet challenges");
         sqlx::query("delete from users where id = $1")
             .bind(user_id)
             .execute(&pool)
