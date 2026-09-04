@@ -67,7 +67,17 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let status = self.as_status();
-        let message = self.to_string();
+        let message = match &self {
+            ApiError::Db(error) => {
+                tracing::error!(error = %error, "database request failed");
+                "internal server error".to_string()
+            }
+            ApiError::Internal(error) => {
+                tracing::error!(error = %error, "internal request failed");
+                "internal server error".to_string()
+            }
+            _ => self.to_string(),
+        };
         let body = ErrorBody {
             error: ErrorPayload {
                 code: self.as_code().to_string(),
@@ -122,5 +132,18 @@ mod tests {
         let (status, payload) = error_payload(ApiError::Internal(anyhow::anyhow!("boom"))).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(payload["error"]["code"], "INTERNAL_ERROR");
+        assert_eq!(payload["error"]["message"], "internal server error");
+        assert!(!payload.to_string().contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn hides_database_error_details() {
+        let error = sqlx::Error::Protocol("sensitive database detail".to_string());
+        let (status, payload) = error_payload(ApiError::Db(error)).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(payload["error"]["code"], "INTERNAL_ERROR");
+        assert_eq!(payload["error"]["message"], "internal server error");
+        assert!(!payload.to_string().contains("sensitive database detail"));
     }
 }
