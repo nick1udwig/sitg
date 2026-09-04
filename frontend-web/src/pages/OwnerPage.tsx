@@ -33,6 +33,20 @@ const DEFAULT_FORM: RepoConfigFormState = {
   draftPrsGated: true
 };
 
+function OwnerAuthPrompt({ busy, onSignIn }: { busy: boolean; onSignIn: () => void }) {
+  return (
+    <div className="auth-prompt">
+      <div className="landing-brand">Skin In The Game</div>
+      <p className="auth-prompt-desc">
+        Sign in with GitHub to configure repositories, set stake thresholds, and connect the GitHub App.
+      </p>
+      <button disabled={busy} onClick={onSignIn} aria-label="Sign in with GitHub">
+        {busy ? 'Opening GitHub...' : 'Sign in with GitHub'}
+      </button>
+    </div>
+  );
+}
+
 export function OwnerPage() {
   const { state, setMe, setRepo, runBusy, isBusy, pushNotice } = useAppState();
   const [config, setConfig] = useState<RepoConfigResponse | null>(null);
@@ -309,19 +323,10 @@ export function OwnerPage() {
 
   if (!state.me) {
     return (
-      <div className="auth-prompt">
-        <div className="landing-brand">Skin In The Game</div>
-        <p className="auth-prompt-desc">
-          Sign in with GitHub to configure repositories, set stake thresholds, and connect the GitHub App.
-        </p>
-        <button
-          disabled={isBusy('github-sign-in') || signInStarting}
-          onClick={() => void handleGitHubSignIn()}
-          aria-label="Sign in with GitHub"
-        >
-          {isBusy('github-sign-in') || signInStarting ? 'Opening GitHub...' : 'Sign in with GitHub'}
-        </button>
-      </div>
+      <OwnerAuthPrompt
+        busy={isBusy('github-sign-in') || signInStarting}
+        onSignIn={() => { void handleGitHubSignIn(); }}
+      />
     );
   }
 

@@ -14,8 +14,8 @@ import { stakingContractAddress } from '../lib/staking';
 import { SUPPORTED_CHAIN_ID } from '../lib/wagmi';
 import { useAppState } from '../state';
 import type { StakeStatusResponse, StakingConfigResponse, WalletLinkStatusResponse } from '../types';
+import { ContributorAuthPrompt, ContributorView } from './contributor/ContributorView';
 
-const CHAIN_NAMES: Record<number, string> = { 8453: 'Base', 84532: 'Base Sepolia' };
 const STAKING_ABI = [
   {
     type: 'function',
@@ -25,10 +25,6 @@ const STAKING_ABI = [
     outputs: []
   }
 ] as const;
-
-function truncateAddress(address: string): string {
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
 
 export function ContributorPage() {
   const { state, runBusy, isBusy, pushNotice } = useAppState();
@@ -210,99 +206,26 @@ export function ContributorPage() {
 
   if (!state.me) {
     return (
-      <div className="auth-prompt">
-        <div className="landing-brand">Skin In The Game</div>
-        <p className="auth-prompt-desc">
-          Link your wallet to your GitHub account. When a bot posts a gate link on your PR, click it to verify your stake.
-        </p>
-        <button
-          disabled={isBusy('github-sign-in')}
-          onClick={() => runBusy('github-sign-in', () => githubSignIn(window.location.href))}
-          aria-label="Sign in with GitHub"
-        >
-          {isBusy('github-sign-in') ? 'Redirecting...' : 'Sign in with GitHub'}
-        </button>
-      </div>
+      <ContributorAuthPrompt
+        busy={isBusy('github-sign-in')}
+        onSignIn={() => { void runBusy('github-sign-in', () => githubSignIn(window.location.href)); }}
+      />
     );
   }
 
-  const chainName = account.chainId ? (CHAIN_NAMES[account.chainId] ?? `Chain ${account.chainId}`) : 'Unknown';
-  const stakeBalance = (() => {
-    try {
-      return BigInt(stakeStatus?.staked_balance_wei ?? '0');
-    } catch {
-      return 0n;
-    }
-  })();
-  const lockEndsAt = stakeStatus ? new Date(stakeStatus.unlock_time).getTime() : 0;
-  const lockActive = stakeBalance > 0n && lockEndsAt > nowMs;
-  const connectedWalletIsLinked = Boolean(
-    account.address
-    && walletLinkStatus?.wallet_address
-    && account.address.toLowerCase() === walletLinkStatus.wallet_address.toLowerCase()
-  );
-  const canWithdraw = Boolean(
-    stakingConfig
-    && connectedWalletIsLinked
-    && stakeBalance > 0n
-    && !lockActive
-  );
-
   return (
-    <section className="grid" style={{ maxWidth: 600, margin: '0 auto' }}>
-      <article className="card">
-        <h2>Wallet Link</h2>
-        <p className="meta">Link your wallet to your GitHub account. When a bot posts a gate link on your PR, click it to verify your stake.</p>
-
-        <dl className="kv">
-          <dt>GitHub</dt>
-          <dd>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <span className="status-dot green" />
-              @{state.me.github_login}
-            </span>
-          </dd>
-          <dt>Wallet</dt>
-          <dd>{account.address ? truncateAddress(account.address) : <span style={{ color: 'var(--ink-soft)' }}>Not connected</span>}</dd>
-          <dt>Linked wallet</dt>
-          <dd>
-            {walletLinkStatus?.wallet_address
-              ? truncateAddress(walletLinkStatus.wallet_address)
-              : <span style={{ color: 'var(--ink-soft)' }}>Not linked</span>}
-          </dd>
-          <dt>Chain</dt>
-          <dd>{chainName}</dd>
-          <dt>Staked balance</dt>
-          <dd>{stakeStatus ? `${stakeStatus.staked_balance_wei} wei` : 'No linked-wallet stake found'}</dd>
-          <dt>Stake lock</dt>
-          <dd>
-            {stakeBalance > 0n
-              ? lockActive
-                ? `Locked until ${new Date(stakeStatus!.unlock_time).toLocaleString()}`
-                : 'Unlocked'
-              : 'No active stake'}
-          </dd>
-        </dl>
-
-        <div className="row-wrap">
-          <button disabled={!state.me || !account.address || isBusy('wallet-link')} onClick={handleLink}>
-            {isBusy('wallet-link') ? 'Linking...' : 'Link Wallet'}
-          </button>
-          <button className="warn" disabled={!state.me || stakeBalance > 0n || isBusy('wallet-unlink')} onClick={handleUnlink}>
-            {isBusy('wallet-unlink') ? 'Unlinking...' : stakeBalance > 0n ? 'Withdraw Before Unlinking' : 'Unlink Wallet'}
-          </button>
-          <button
-            disabled={!canWithdraw || isBusy('stake-withdraw-tx') || isBusy('stake-withdraw-receipt') || isBusy('switch-chain')}
-            onClick={handleWithdraw}
-          >
-            {isBusy('stake-withdraw-receipt')
-              ? 'Confirming...'
-              : isBusy('stake-withdraw-tx')
-                ? 'Submitting...'
-                : 'Withdraw Stake'}
-          </button>
-        </div>
-      </article>
-    </section>
+    <ContributorView
+      githubLogin={state.me.github_login}
+      walletAddress={account.address}
+      chainId={account.chainId}
+      walletLinkStatus={walletLinkStatus}
+      stakeStatus={stakeStatus}
+      stakingConfigured={Boolean(stakingConfig)}
+      nowMs={nowMs}
+      isBusy={isBusy}
+      onLink={() => { void handleLink(); }}
+      onUnlink={() => { void handleUnlink(); }}
+      onWithdraw={() => { void handleWithdraw(); }}
+    />
   );
 }

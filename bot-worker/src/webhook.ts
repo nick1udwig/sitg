@@ -83,6 +83,53 @@ const parseRepositoryRefs = (value: unknown): InstallationRepositoryRef[] | null
   return parsed;
 };
 
+const parseInstallationId = (installation: PullRequestPayload["installation"]): number | null => {
+  if (!installation || typeof installation.id !== "number") {
+    return null;
+  }
+  return installation.id;
+};
+
+const parsePullRequestRepository = (
+  repository: PullRequestPayload["repository"],
+): NormalizedPrEvent["repository"] | null => {
+  if (!repository || typeof repository.id !== "number" || typeof repository.full_name !== "string") {
+    return null;
+  }
+  return { id: repository.id, full_name: repository.full_name };
+};
+
+const parsePullRequestDetails = (
+  pullRequest: PullRequestPayload["pull_request"],
+): NormalizedPrEvent["pull_request"] | null => {
+  if (!pullRequest || !pullRequest.user || !pullRequest.head) {
+    return null;
+  }
+
+  if (
+    typeof pullRequest.number !== "number" ||
+    typeof pullRequest.id !== "number" ||
+    typeof pullRequest.html_url !== "string" ||
+    typeof pullRequest.user.id !== "number" ||
+    typeof pullRequest.user.login !== "string" ||
+    typeof pullRequest.head.sha !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    number: pullRequest.number,
+    id: pullRequest.id,
+    html_url: pullRequest.html_url,
+    user: {
+      id: pullRequest.user.id,
+      login: pullRequest.user.login,
+    },
+    head_sha: pullRequest.head.sha,
+    is_draft: Boolean(pullRequest.draft),
+  };
+};
+
 const parsePullRequestEvent = (
   deliveryId: string,
   rawBody: Buffer,
@@ -99,27 +146,10 @@ const parsePullRequestEvent = (
     return null;
   }
 
-  const installationId = payload.installation?.id;
-  const repoId = payload.repository?.id;
-  const repoFullName = payload.repository?.full_name;
-  const prNumber = payload.pull_request?.number;
-  const prId = payload.pull_request?.id;
-  const prUrl = payload.pull_request?.html_url;
-  const prAuthorId = payload.pull_request?.user?.id;
-  const prAuthorLogin = payload.pull_request?.user?.login;
-  const prHeadSha = payload.pull_request?.head?.sha;
-
-  if (
-    typeof installationId !== "number" ||
-    typeof repoId !== "number" ||
-    typeof repoFullName !== "string" ||
-    typeof prNumber !== "number" ||
-    typeof prId !== "number" ||
-    typeof prUrl !== "string" ||
-    typeof prAuthorId !== "number" ||
-    typeof prAuthorLogin !== "string" ||
-    typeof prHeadSha !== "string"
-  ) {
+  const installationId = parseInstallationId(payload.installation);
+  const repository = parsePullRequestRepository(payload.repository);
+  const pullRequest = parsePullRequestDetails(payload.pull_request);
+  if (installationId === null || !repository || !pullRequest) {
     return null;
   }
 
@@ -127,21 +157,8 @@ const parsePullRequestEvent = (
     delivery_id: deliveryId,
     installation_id: installationId,
     action: payload.action as PrAction,
-    repository: {
-      id: repoId,
-      full_name: repoFullName,
-    },
-    pull_request: {
-      number: prNumber,
-      id: prId,
-      html_url: prUrl,
-      user: {
-        id: prAuthorId,
-        login: prAuthorLogin,
-      },
-      head_sha: prHeadSha,
-      is_draft: Boolean(payload.pull_request?.draft),
-    },
+    repository,
+    pull_request: pullRequest,
     event_time: nowIso,
   };
 };

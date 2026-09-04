@@ -13,38 +13,16 @@ import {
   submitGateConfirmation
 } from '../api';
 import { toUserMessage } from '../lib/error-map';
-import { gateBlockingMessage, gateReadyMessage, parseCountdown } from '../lib/gate';
+import { gateBlockingMessage } from '../lib/gate';
 import { normalizeConfirmTypedData } from '../lib/eip712';
 import { assertTypedDataUsesStakingContract, stakingContractAddress } from '../lib/staking';
 import { useAppState } from '../state';
 import { SUPPORTED_CHAIN_ID } from '../lib/wagmi';
 import type { GateResponse, StakeStatusResponse, StakingConfigResponse, WalletLinkStatusResponse } from '../types';
+import { GateLoadingView, GateView, InvalidGateView } from './gate/GateView';
+import { createGateViewModel, parseWeiToBigInt } from './gate/gate-view-model';
 
-const STATUS_STYLES: Record<string, { dot: string; badge: string }> = {
-  PENDING: { dot: 'amber', badge: 'warn' },
-  VERIFIED: { dot: 'green', badge: 'ok' },
-  EXEMPT: { dot: 'green', badge: 'ok' },
-  TIMED_OUT_CLOSED: { dot: 'red', badge: 'err' },
-  CANCELED: { dot: 'red', badge: 'err' }
-};
 export const GATE_POLL_INTERVAL_MS = 5_000;
-
-function countdownMinutes(countdown: string): number {
-  const parts = countdown.split(':');
-  return parseInt(parts[0], 10);
-}
-
-function weiToEth(wei: string): number | null {
-  const numeric = Number(wei);
-  if (!Number.isFinite(numeric)) {
-    return null;
-  }
-  return numeric / 1e18;
-}
-
-function formatUsd(value: number): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(value);
-}
 
 const LINK_CACHE_KEY = 'sitg.gateLinkedWalletByUser';
 const STAKING_ABI = [
@@ -92,17 +70,6 @@ function clearLinkedWalletCache(githubLogin: string): void {
     localStorage.setItem(LINK_CACHE_KEY, JSON.stringify(parsed));
   } catch {
     // Ignore localStorage failures.
-  }
-}
-
-function parseWeiToBigInt(value: string): bigint | null {
-  if (!/^\d+$/.test(value)) {
-    return null;
-  }
-  try {
-    return BigInt(value);
-  } catch {
-    return null;
   }
 }
 
@@ -425,40 +392,76 @@ export function GatePage() {
     return discovered;
   };
 
+  const resolveStakeContractForGate = async (deadlineAt: string): Promise<`0x${string}` | null> => {
+    const config = await runBusy('stake-contract-resolve', resolveStakingConfig);
+    if (!config) {
+      pushNotice('error', 'Staking contract address is unavailable.');
+      return null;
+    }
+    if (new Date(deadlineAt).getTime() <= Date.now()) {
+      pushNotice('error', 'This challenge expired before the transaction could be submitted.');
+      return null;
+    }
+    return stakingContractAddress(config);
+  };
+
+  const waitForStakeReceipt = async (hash: `0x${string}`): Promise<boolean> => {
+    if (!publicClient) {
+      return true;
+    }
+    const receipt = await runBusy('stake-receipt', async () => {
+      pushNotice('info', 'Waiting for stake transaction confirmation...');
+      const confirmedReceipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (confirmedReceipt.status !== 'success') {
+        throw new Error('The stake transaction reverted.');
+      }
+      return confirmedReceipt;
+    });
+    return Boolean(receipt);
+  };
+
+  const refreshStakeAfterTransaction = async (requiredWei: bigint | null): Promise<void> => {
+    if (!stakeWalletAddress) {
+      return;
+    }
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const latest = await getStakeStatus(stakeWalletAddress).catch(() => null);
+      if (latest) {
+        setStakeStatus(latest);
+        if (stakeRequirementMet(latest, requiredWei)) {
+          return;
+        }
+      }
+      await sleep(1000);
+    }
+  };
+
   const handleStake = async (): Promise<void> => {
     if (!gate) {
       return;
     }
-    if (gate.status !== 'PENDING' || new Date(gate.deadline_at).getTime() <= Date.now()) {
-      pushNotice('error', 'This challenge has expired.');
-      return;
-    }
-    if (!account.address) {
-      pushNotice('error', 'Connect a wallet first.');
+    const initialError = stakeRequestError(gate, account.address);
+    if (initialError) {
+      pushNotice('error', initialError);
       return;
     }
     if (!(await ensureBaseChain())) {
       return;
     }
-    if (linkedWalletAddress && account.address.toLowerCase() !== linkedWalletAddress.toLowerCase()) {
+    const address = account.address!;
+    if (linkedWalletAddress && address.toLowerCase() !== linkedWalletAddress.toLowerCase()) {
       pushNotice('error', 'Connect the linked wallet before staking.');
       return;
     }
 
-    const config = await runBusy('stake-contract-resolve', resolveStakingConfig);
-    if (!config) {
-      pushNotice('error', 'Staking contract address is unavailable.');
+    const contractAddress = await resolveStakeContractForGate(gate.deadline_at);
+    if (!contractAddress) {
       return;
     }
-    if (new Date(gate.deadline_at).getTime() <= Date.now()) {
-      pushNotice('error', 'This challenge expired before the transaction could be submitted.');
-      return;
-    }
-    const contractAddress = stakingContractAddress(config);
 
     const requiredWei = parseWeiToBigInt(gate.threshold_wei_snapshot);
     const currentWei = parseWeiToBigInt(stakeStatus?.staked_balance_wei ?? '0') ?? 0n;
-    const value = requiredWei && currentWei < requiredWei ? requiredWei - currentWei : 0n;
+    const value = additionalStakeValue(requiredWei, currentWei);
 
     const hash = await runBusy('stake-tx', async () => {
       pushNotice('info', 'Check your wallet to approve the stake transaction.');
@@ -476,32 +479,10 @@ export function GatePage() {
     }
 
     pushNotice('success', `Stake transaction submitted: ${hash.slice(0, 10)}...`);
-    if (publicClient) {
-      const receipt = await runBusy('stake-receipt', async () => {
-        pushNotice('info', 'Waiting for stake transaction confirmation...');
-        const confirmedReceipt = await publicClient.waitForTransactionReceipt({ hash });
-        if (confirmedReceipt.status !== 'success') {
-          throw new Error('The stake transaction reverted.');
-        }
-        return confirmedReceipt;
-      });
-      if (!receipt) return;
+    if (!(await waitForStakeReceipt(hash))) {
+      return;
     }
-
-    if (stakeWalletAddress) {
-      let latest: StakeStatusResponse | null = null;
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        latest = await getStakeStatus(stakeWalletAddress).catch(() => null);
-        if (latest) {
-          setStakeStatus(latest);
-          const nextStaked = parseWeiToBigInt(latest.staked_balance_wei);
-          if (requiredWei !== null && nextStaked !== null && nextStaked >= requiredWei && latest.lock_active) {
-            break;
-          }
-        }
-        await sleep(1000);
-      }
-    }
+    await refreshStakeAfterTransaction(requiredWei);
   };
 
   const handleConfirm = async (): Promise<void> => {
@@ -542,190 +523,64 @@ export function GatePage() {
     setGate(refreshed);
   };
 
+  const handleGitHubSignIn = (): void => {
+    void runBusy('github-sign-in', () => githubSignIn(window.location.href));
+  };
+
   if (!gateToken) {
-    return (
-      <section className="card" style={{ maxWidth: 600, margin: '0 auto' }}>
-        <h2>Contributor Gate</h2>
-        <p className="error">Invalid gate URL.</p>
-      </section>
-    );
+    return <InvalidGateView />;
   }
 
   if (!gate) {
-    return (
-      <section className="grid two">
-        {gateError ? (
-          <article className="card" style={{ gridColumn: '1 / -1' }}>
-            <h2>PR Stake Gate</h2>
-            <div className="error-bar">{gateError}</div>
-          </article>
-        ) : (
-          <>
-            <article className="card"><p className="skeleton" /></article>
-            <article className="card"><p className="skeleton" /></article>
-          </>
-        )}
-      </section>
-    );
+    return <GateLoadingView error={gateError} />;
   }
 
-  const statusStyle = STATUS_STYLES[gate.status] ?? { dot: 'gray', badge: '' };
-  const countdown = parseCountdown(gate.deadline_at, nowMs);
-  const minutes = countdownMinutes(countdown);
-  const isExpired = countdown === '00:00';
-  const isWarning = !isExpired && minutes < 5;
-  const countdownClass = `countdown${isExpired ? ' expired' : isWarning ? ' warning pulse' : ''}`;
-
-  const hasGitHub = Boolean(state.me);
-  const hasWallet = Boolean(account.address);
-  const hasLinkedWallet = Boolean(linkedWalletAddress);
-  const canLinkWallet = hasWallet && (!hasLinkedWallet || !isConnectedWalletLinked);
-  const thresholdEth = weiToEth(gate.threshold_wei_snapshot);
-  const thresholdUsdEstimate = thresholdEth !== null && ethUsdSpot !== null ? formatUsd(thresholdEth * ethUsdSpot) : null;
-  const thresholdWei = parseWeiToBigInt(gate.threshold_wei_snapshot);
-  const stakedWei = parseWeiToBigInt(stakeStatus?.staked_balance_wei ?? '');
-  const stakeLockActive = Boolean(
-    stakeStatus?.lock_active
-    && new Date(stakeStatus.unlock_time).getTime() > nowMs
-  );
-  const hasSufficientBalance = Boolean(
-    thresholdWei !== null
-    && stakedWei !== null
-    && stakedWei >= thresholdWei
-  );
-  const hasSufficientStake = Boolean(
-    isConnectedWalletLinked
-    && hasSufficientBalance
-    && stakeLockActive
-  );
-  const actionsBlocked = Boolean(blockingMessage) || gate.status !== 'PENDING' || isExpired;
+  const viewModel = createGateViewModel({
+    gate,
+    me: state.me,
+    accountAddress: account.address,
+    linkedWalletAddress,
+    isConnectedWalletLinked,
+    stakeStatus,
+    nowMs,
+    ethUsdSpot,
+    blockingMessage,
+    isBusy
+  });
 
   return (
-    <section className="grid two">
-      <article className="card">
-        <p className="meta" style={{ marginBottom: 4 }}>{gate.github_repo_full_name} &rsaquo; PR #{gate.github_pr_number}</p>
-        <h2>PR Stake Gate</h2>
-        <div className="gate-explainer" style={{ marginBottom: 12 }}>
-          <p className="gate-explainer-title">{gate.github_repo_full_name} has been getting too many contributions.</p>
-          <p className="gate-explainer-copy">To ensure your commitment, we ask you to temporarily post a bond of {thresholdUsdEstimate ?? 'an amount shown below'}.</p>
-          <p className="gate-explainer-copy">
-            You can reclaim your bond after 30 days at
-            {' '}
-            <a href="https://sitg.io/contributor" target="_blank" rel="noreferrer">sitg.io/contributor</a>.
-          </p>
-        </div>
-        <span className={`badge ${statusStyle.badge}`}>
-          <span className={`status-dot ${statusStyle.dot}`} />
-          {gate.status}
-        </span>
-
-        <div className={countdownClass} aria-live="polite" aria-label={`Time remaining ${countdown}`}>
-          {countdown}
-        </div>
-
-        <dl className="kv">
-          <dt>Author</dt>
-          <dd>@{gate.github_pr_author_login}</dd>
-          <dt>Head SHA</dt>
-          <dd>{gate.head_sha.slice(0, 12)}</dd>
-          <dt>Threshold (wei)</dt>
-          <dd>{gate.threshold_wei_snapshot}</dd>
-          <dt>Threshold (USD estimate)</dt>
-          <dd>{thresholdUsdEstimate ?? 'Unavailable right now'}</dd>
-          <dt>Stake</dt>
-          <dd>
-            {stakeStatus
-              ? `${stakeStatus.staked_balance_wei} wei \u00b7 lock ${stakeLockActive ? 'active' : 'inactive'}`
-              : account.address
-                ? 'Unavailable'
-                : 'Connect wallet'}
-          </dd>
-        </dl>
-      </article>
-
-      <article className="card">
-        <h3>Verification</h3>
-
-        {blockingMessage ? (
-          <div className="error-bar">{blockingMessage}</div>
-        ) : (
-          <div className="success-bar">{gateReadyMessage(gate)}</div>
-        )}
-
-        {!hasGitHub && (
-          <div className="row-wrap" style={{ marginTop: 8 }}>
-            <button
-              disabled={actionsBlocked || isBusy('github-sign-in')}
-              onClick={() => runBusy('github-sign-in', () => githubSignIn(window.location.href))}
-            >
-              {isBusy('github-sign-in') ? 'Redirecting...' : 'Sign in with GitHub'}
-            </button>
-          </div>
-        )}
-
-        <div className="step-list">
-          <div className="step">
-            <span className={`step-indicator${hasGitHub ? ' done' : ''}`}>{hasGitHub ? '\u2713' : '1'}</span>
-            <span className={`step-label${hasGitHub ? ' done' : ''}`}>Sign in with GitHub</span>
-          </div>
-          <div className="step">
-            <span className={`step-indicator${hasWallet ? ' done' : ''}`}>{hasWallet ? '\u2713' : '2'}</span>
-            <span className={`step-label${hasWallet ? ' done' : ''}`}>Connect wallet</span>
-          </div>
-          <div className="step">
-            <span className={`step-indicator${isConnectedWalletLinked ? ' done' : ''}`}>{isConnectedWalletLinked ? '\u2713' : '3'}</span>
-            <span className={`step-label${isConnectedWalletLinked ? ' done' : ''}`}>Link wallet to GitHub</span>
-            <button
-              className="ghost"
-              style={{ marginLeft: 'auto', padding: '4px 10px' }}
-              disabled={actionsBlocked || !canLinkWallet || isBusy('wallet-link') || isBusy('switch-chain')}
-              onClick={handleLinkWallet}
-            >
-              {isConnectedWalletLinked ? 'Linked' : isBusy('wallet-link') ? 'Linking...' : hasLinkedWallet ? 'Relink' : 'Link'}
-            </button>
-          </div>
-          <div className="step">
-            <span className={`step-indicator${hasSufficientStake ? ' done' : ''}`}>{hasSufficientStake ? '\u2713' : '4'}</span>
-            <span className={`step-label${hasSufficientStake ? ' done' : ''}`}>Stake</span>
-            <button
-              className="ghost"
-              style={{ marginLeft: 'auto', padding: '4px 10px' }}
-              disabled={
-                actionsBlocked
-                || !hasWallet
-                || !isConnectedWalletLinked
-                || hasSufficientStake
-                || isBusy('stake-tx')
-                || isBusy('stake-receipt')
-                || isBusy('stake-contract-resolve')
-                || isBusy('switch-chain')
-              }
-              onClick={handleStake}
-            >
-              {hasSufficientStake
-                ? 'Staked'
-                : isBusy('stake-receipt')
-                  ? 'Confirming...'
-                  : isBusy('stake-tx')
-                    ? 'Submitting...'
-                    : hasSufficientBalance && !stakeLockActive
-                      ? 'Renew lock'
-                      : 'Stake'}
-            </button>
-          </div>
-          <div className="step">
-            <span className="step-indicator">5</span>
-            <span className="step-label">Sign PR confirmation</span>
-            <button
-              style={{ marginLeft: 'auto', padding: '4px 10px' }}
-              disabled={actionsBlocked || !hasWallet || !hasSufficientStake || isBusy('gate-confirm') || isBusy('switch-chain')}
-              onClick={handleConfirm}
-            >
-              {isBusy('gate-confirm') ? 'Confirming...' : 'Sign'}
-            </button>
-          </div>
-        </div>
-      </article>
-    </section>
+    <GateView
+      gate={gate}
+      model={viewModel}
+      onGitHubSignIn={handleGitHubSignIn}
+      onLinkWallet={handleLinkWallet}
+      onStake={handleStake}
+      onConfirm={handleConfirm}
+    />
   );
+}
+
+function stakeRequestError(gate: GateResponse, address: string | undefined): string | null {
+  if (gate.status !== 'PENDING' || new Date(gate.deadline_at).getTime() <= Date.now()) {
+    return 'This challenge has expired.';
+  }
+  if (!address) {
+    return 'Connect a wallet first.';
+  }
+  return null;
+}
+
+function additionalStakeValue(requiredWei: bigint | null, currentWei: bigint): bigint {
+  if (requiredWei === null || currentWei >= requiredWei) {
+    return 0n;
+  }
+  return requiredWei - currentWei;
+}
+
+function stakeRequirementMet(status: StakeStatusResponse, requiredWei: bigint | null): boolean {
+  const nextStaked = parseWeiToBigInt(status.staked_balance_wei);
+  return requiredWei !== null
+    && nextStaked !== null
+    && nextStaked >= requiredWei
+    && status.lock_active;
 }

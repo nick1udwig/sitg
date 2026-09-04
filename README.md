@@ -11,6 +11,22 @@ Local backend+bot integration loop (centralized v2):
 
 Staking contract deployed at [0xd195ce907655363f59283e34136adcc36ac54e8f](https://basescan.org/address/0xd195ce907655363f59283e34136adcc36ac54e8f)
 
+## Development checks
+
+Functions in languages supported by `cccc` must stay at or below 20 cognitive and 20 cyclomatic complexity. Install [`cccc` 1.6.0](https://github.com/moznion/cccc/releases/tag/v1.6.0), then enable the tracked pre-commit hook once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Run the same repository-wide check manually with:
+
+```sh
+scripts/check-complexity.sh
+```
+
+Set `CCCC_BIN=/absolute/path/to/cccc` when the pinned binary is not on `PATH`.
+
 ## Screencaps
 
 As of 260216

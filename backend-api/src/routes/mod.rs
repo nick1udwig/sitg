@@ -31,9 +31,10 @@ use crate::{
             AuthCallbackQuery, AuthStartQuery, BotActionClaimRequest, BotActionClaimResponse,
             BotActionItem, BotActionResultRequest, BotActionResultResponse, ConfirmRequest,
             ConfirmResponse, ConfirmTypedDataResponse, GateResponse,
-            InternalInstallationSyncRequest, InternalInstallationSyncResponse,
-            InternalPrEventRequest, InternalPrEventResponse, MeResponse, RepoConfigPutRequest,
-            RepoConfigResponse, RepoGithubAppStatusResponse, RepoOptionResponse,
+            InternalInstallationPayload, InternalInstallationSyncRequest,
+            InternalInstallationSyncResponse, InternalPrEventRequest, InternalPrEventResponse,
+            InternalRepository, MeResponse, RepoConfigPutRequest, RepoConfigResponse,
+            RepoGithubAppStatusResponse, RepoOptionResponse,
             ResolveLoginsRequest, ResolveLoginsResponse, ResolvedLogin, StakeStatusQuery,
             StakeStatusResponse, StakingConfigResponse, ThresholdResponse,
             TypedDataDomain, TypedDataMessage, WalletLinkChallengeResponse,
@@ -1585,183 +1586,219 @@ async fn internal_v2_installation_sync(
         }));
     }
 
-    let updated_installation_id: Option<i64>;
-    let mut updated_repositories = 0i32;
+    let Some(kind) = installation_sync_kind(&payload.event_name, &payload.action) else {
+        tx.commit().await?;
+        return Ok(Json(ignored_installation_sync_response()));
+    };
+    let Some(installation) = payload.installation.as_ref() else {
+        tx.commit().await?;
+        return Ok(Json(ignored_installation_sync_response()));
+    };
 
-    match (payload.event_name.as_str(), payload.action.as_str()) {
-        ("installation", "created")
-        | ("installation", "deleted")
-        | ("installation", "suspend")
-        | ("installation", "unsuspend") => {
-            let Some(installation) = payload.installation else {
-                tx.commit().await?;
-                return Ok(Json(InternalInstallationSyncResponse {
-                    ingest_status: "IGNORED".to_string(),
-                    updated_installation_id: None,
-                    updated_repositories: 0,
-                }));
-            };
-
-            updated_installation_id = Some(installation.id);
-            let active = matches!(payload.action.as_str(), "created" | "unsuspend");
-            let suspended_at = if payload.action == "suspend" {
-                Some(payload.event_time)
-            } else {
-                None
-            };
-            let deleted_at = if payload.action == "deleted" {
-                Some(payload.event_time)
-            } else {
-                None
-            };
-
-            sqlx::query(
-                r#"
-                insert into github_installations (
-                  installation_id, account_login, account_type, active, suspended_at, deleted_at, created_at, updated_at
-                )
-                values ($1, $2, $3, $4, $5, $6, $7, $7)
-                on conflict (installation_id) do update
-                set account_login = excluded.account_login,
-                    account_type = excluded.account_type,
-                    active = excluded.active,
-                    suspended_at = excluded.suspended_at,
-                    deleted_at = excluded.deleted_at,
-                    updated_at = excluded.updated_at
-                "#,
+    let updated_repositories = match kind {
+        InstallationSyncKind::Installation => {
+            sync_installation_event(&mut tx, &payload, installation).await?
+        }
+        InstallationSyncKind::RepositoriesAdded => {
+            sync_installation_repositories_event(
+                &mut tx,
+                installation,
+                &payload.repositories_added,
+                payload.event_time,
+                true,
             )
-            .bind(installation.id)
-            .bind(&installation.account_login)
-            .bind(&installation.account_type)
-            .bind(active)
-            .bind(suspended_at)
-            .bind(deleted_at)
-            .bind(payload.event_time)
-            .execute(&mut *tx)
-            .await?;
-
-            if payload.action == "deleted" {
-                let changed = sqlx::query(
-                    "update github_installation_repositories set active = false, updated_at = $2 where installation_id = $1 and active = true",
-                )
-                .bind(installation.id)
-                .bind(payload.event_time)
-                .execute(&mut *tx)
-                .await?;
-                updated_repositories = changed.rows_affected() as i32;
-            } else {
-                for repo in payload.repositories {
-                    let affected = sqlx::query(
-                        r#"
-                        insert into github_installation_repositories (
-                          installation_id, github_repo_id, full_name, active, created_at, updated_at
-                        )
-                        values ($1, $2, $3, true, $4, $4)
-                        on conflict (installation_id, github_repo_id) do update
-                        set full_name = excluded.full_name,
-                            active = true,
-                            updated_at = excluded.updated_at
-                        "#,
-                    )
-                    .bind(installation.id)
-                    .bind(repo.id)
-                    .bind(&repo.full_name)
-                    .bind(payload.event_time)
-                    .execute(&mut *tx)
-                    .await?;
-                    updated_repositories += affected.rows_affected() as i32;
-                }
-            }
+            .await?
         }
-        ("installation_repositories", "added") | ("installation_repositories", "removed") => {
-            let Some(installation) = payload.installation else {
-                tx.commit().await?;
-                return Ok(Json(InternalInstallationSyncResponse {
-                    ingest_status: "IGNORED".to_string(),
-                    updated_installation_id: None,
-                    updated_repositories: 0,
-                }));
-            };
-            updated_installation_id = Some(installation.id);
-
-            sqlx::query(
-                r#"
-                insert into github_installations (
-                  installation_id, account_login, account_type, active, suspended_at, deleted_at, created_at, updated_at
-                )
-                values ($1, $2, $3, true, null, null, $4, $4)
-                on conflict (installation_id) do update
-                set account_login = excluded.account_login,
-                    account_type = excluded.account_type,
-                    active = true,
-                    suspended_at = null,
-                    deleted_at = null,
-                    updated_at = excluded.updated_at
-                "#,
+        InstallationSyncKind::RepositoriesRemoved => {
+            sync_installation_repositories_event(
+                &mut tx,
+                installation,
+                &payload.repositories_removed,
+                payload.event_time,
+                false,
             )
-            .bind(installation.id)
-            .bind(&installation.account_login)
-            .bind(&installation.account_type)
-            .bind(payload.event_time)
-            .execute(&mut *tx)
-            .await?;
-
-            if payload.action == "added" {
-                for repo in payload.repositories_added {
-                    let affected = sqlx::query(
-                        r#"
-                        insert into github_installation_repositories (
-                          installation_id, github_repo_id, full_name, active, created_at, updated_at
-                        )
-                        values ($1, $2, $3, true, $4, $4)
-                        on conflict (installation_id, github_repo_id) do update
-                        set full_name = excluded.full_name,
-                            active = true,
-                            updated_at = excluded.updated_at
-                        "#,
-                    )
-                    .bind(installation.id)
-                    .bind(repo.id)
-                    .bind(&repo.full_name)
-                    .bind(payload.event_time)
-                    .execute(&mut *tx)
-                    .await?;
-                    updated_repositories += affected.rows_affected() as i32;
-                }
-            } else {
-                for repo in payload.repositories_removed {
-                    let affected = sqlx::query(
-                        r#"
-                        update github_installation_repositories
-                        set active = false, updated_at = $3
-                        where installation_id = $1 and github_repo_id = $2 and active = true
-                        "#,
-                    )
-                    .bind(installation.id)
-                    .bind(repo.id)
-                    .bind(payload.event_time)
-                    .execute(&mut *tx)
-                    .await?;
-                    updated_repositories += affected.rows_affected() as i32;
-                }
-            }
+            .await?
         }
-        _ => {
-            tx.commit().await?;
-            return Ok(Json(InternalInstallationSyncResponse {
-                ingest_status: "IGNORED".to_string(),
-                updated_installation_id: None,
-                updated_repositories: 0,
-            }));
-        }
-    }
+    };
 
     tx.commit().await?;
     Ok(Json(InternalInstallationSyncResponse {
         ingest_status: "ACCEPTED".to_string(),
-        updated_installation_id,
+        updated_installation_id: Some(installation.id),
         updated_repositories,
     }))
+}
+
+enum InstallationSyncKind {
+    Installation,
+    RepositoriesAdded,
+    RepositoriesRemoved,
+}
+
+fn installation_sync_kind(event_name: &str, action: &str) -> Option<InstallationSyncKind> {
+    match (event_name, action) {
+        ("installation", "created" | "deleted" | "suspend" | "unsuspend") => {
+            Some(InstallationSyncKind::Installation)
+        }
+        ("installation_repositories", "added") => Some(InstallationSyncKind::RepositoriesAdded),
+        ("installation_repositories", "removed") => Some(InstallationSyncKind::RepositoriesRemoved),
+        _ => None,
+    }
+}
+
+fn ignored_installation_sync_response() -> InternalInstallationSyncResponse {
+    InternalInstallationSyncResponse {
+        ingest_status: "IGNORED".to_string(),
+        updated_installation_id: None,
+        updated_repositories: 0,
+    }
+}
+
+async fn sync_installation_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    payload: &InternalInstallationSyncRequest,
+    installation: &InternalInstallationPayload,
+) -> ApiResult<i32> {
+    let active = matches!(payload.action.as_str(), "created" | "unsuspend");
+    let suspended_at = (payload.action == "suspend").then_some(payload.event_time);
+    let deleted_at = (payload.action == "deleted").then_some(payload.event_time);
+
+    sqlx::query(
+        r#"
+        insert into github_installations (
+          installation_id, account_login, account_type, active, suspended_at, deleted_at, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $7)
+        on conflict (installation_id) do update
+        set account_login = excluded.account_login,
+            account_type = excluded.account_type,
+            active = excluded.active,
+            suspended_at = excluded.suspended_at,
+            deleted_at = excluded.deleted_at,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(installation.id)
+    .bind(&installation.account_login)
+    .bind(&installation.account_type)
+    .bind(active)
+    .bind(suspended_at)
+    .bind(deleted_at)
+    .bind(payload.event_time)
+    .execute(&mut **tx)
+    .await?;
+
+    if payload.action == "deleted" {
+        let changed = sqlx::query(
+            "update github_installation_repositories set active = false, updated_at = $2 where installation_id = $1 and active = true",
+        )
+        .bind(installation.id)
+        .bind(payload.event_time)
+        .execute(&mut **tx)
+        .await?;
+        return Ok(changed.rows_affected() as i32);
+    }
+
+    upsert_installation_repositories(
+        tx,
+        installation.id,
+        &payload.repositories,
+        payload.event_time,
+    )
+    .await
+}
+
+async fn sync_installation_repositories_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    installation: &InternalInstallationPayload,
+    repositories: &[InternalRepository],
+    event_time: chrono::DateTime<Utc>,
+    added: bool,
+) -> ApiResult<i32> {
+    sqlx::query(
+        r#"
+        insert into github_installations (
+          installation_id, account_login, account_type, active, suspended_at, deleted_at, created_at, updated_at
+        )
+        values ($1, $2, $3, true, null, null, $4, $4)
+        on conflict (installation_id) do update
+        set account_login = excluded.account_login,
+            account_type = excluded.account_type,
+            active = true,
+            suspended_at = null,
+            deleted_at = null,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(installation.id)
+    .bind(&installation.account_login)
+    .bind(&installation.account_type)
+    .bind(event_time)
+    .execute(&mut **tx)
+    .await?;
+
+    if added {
+        return upsert_installation_repositories(tx, installation.id, repositories, event_time)
+            .await;
+    }
+
+    deactivate_installation_repositories(tx, installation.id, repositories, event_time).await
+}
+
+async fn upsert_installation_repositories(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    installation_id: i64,
+    repositories: &[InternalRepository],
+    event_time: chrono::DateTime<Utc>,
+) -> ApiResult<i32> {
+    let mut updated = 0i32;
+    for repo in repositories {
+        let affected = sqlx::query(
+            r#"
+            insert into github_installation_repositories (
+              installation_id, github_repo_id, full_name, active, created_at, updated_at
+            )
+            values ($1, $2, $3, true, $4, $4)
+            on conflict (installation_id, github_repo_id) do update
+            set full_name = excluded.full_name,
+                active = true,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(installation_id)
+        .bind(repo.id)
+        .bind(&repo.full_name)
+        .bind(event_time)
+        .execute(&mut **tx)
+        .await?;
+        updated += affected.rows_affected() as i32;
+    }
+    Ok(updated)
+}
+
+async fn deactivate_installation_repositories(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    installation_id: i64,
+    repositories: &[InternalRepository],
+    event_time: chrono::DateTime<Utc>,
+) -> ApiResult<i32> {
+    let mut updated = 0i32;
+    for repo in repositories {
+        let affected = sqlx::query(
+            r#"
+            update github_installation_repositories
+            set active = false, updated_at = $3
+            where installation_id = $1 and github_repo_id = $2 and active = true
+            "#,
+        )
+        .bind(installation_id)
+        .bind(repo.id)
+        .bind(event_time)
+        .execute(&mut **tx)
+        .await?;
+        updated += affected.rows_affected() as i32;
+    }
+    Ok(updated)
 }
 
 async fn internal_v2_bot_actions_claim(
@@ -1862,15 +1899,7 @@ async fn internal_v2_bot_action_result(
     }
     let worker_id = payload.worker_id.clone();
 
-    let outcome = payload.outcome.to_uppercase();
-    if !matches!(
-        outcome.as_str(),
-        "SUCCEEDED" | "RETRYABLE_FAILURE" | "FAILED"
-    ) {
-        return Err(ApiError::validation(
-            "outcome must be SUCCEEDED, RETRYABLE_FAILURE, or FAILED",
-        ));
-    }
+    let outcome = normalize_bot_action_outcome(&payload.outcome)?;
 
     let nonce_message = format!("bot-action-result:{action_id}:{worker_id}:{outcome}");
     let auth = verify_internal_from_headers(&state, &headers, &nonce_message, &body).await?;
@@ -1884,119 +1913,30 @@ async fn internal_v2_bot_action_result(
     .await?;
 
     let failure_code = payload.failure_code;
-    let failure_reason = match outcome.as_str() {
-        "RETRYABLE_FAILURE" => Some(
-            payload
-                .failure_message
-                .unwrap_or_else(|| "retry requested".to_string()),
-        ),
-        "FAILED" => Some(
-            payload
-                .failure_message
-                .unwrap_or_else(|| "unknown failure".to_string()),
-        ),
-        _ => None,
-    };
+    let failure_reason = bot_action_failure_reason(&outcome, payload.failure_message);
     let now = Utc::now();
-    let updated_status: Option<String> = if outcome == "SUCCEEDED" {
-        sqlx::query_scalar(
-            r#"
-            update bot_actions
-            set status = 'DONE', completed_at = $3, failure_code = null, failure_reason = null, updated_at = $3
-            where id = $1 and status = 'CLAIMED' and claimed_by = $2
-            returning status
-            "#,
-        )
-        .bind(action_id)
-        .bind(&worker_id)
-        .bind(now)
-        .fetch_optional(&state.pool)
-        .await?
-    } else if outcome == "RETRYABLE_FAILURE" {
-        let attempts: Option<i32> = sqlx::query_scalar(
-            "select attempts from bot_actions where id = $1 and status = 'CLAIMED' and claimed_by = $2",
-        )
-        .bind(action_id)
-        .bind(&worker_id)
-        .fetch_optional(&state.pool)
-        .await?;
-        if let Some(attempts) = attempts {
-            let exhausted = attempts >= BOT_ACTION_MAX_ATTEMPTS;
-            let next_status = if exhausted { "FAILED" } else { "PENDING" };
-            let completed_at = if exhausted { Some(now) } else { None };
-            let available_at = if exhausted {
-                now
-            } else {
-                now + Duration::seconds(bot_action_retry_delay_seconds(attempts))
-            };
-            sqlx::query_scalar(
-                r#"
-                update bot_actions
-                set status = $3, claimed_by = $2, claimed_at = null, failure_code = $4,
-                    failure_reason = $5, completed_at = $6, available_at = $7, updated_at = $8
-                where id = $1 and status = 'CLAIMED' and claimed_by = $2
-                returning status
-                "#,
-            )
-            .bind(action_id)
-            .bind(&worker_id)
-            .bind(next_status)
-            .bind(failure_code.as_deref())
-            .bind(failure_reason.as_deref())
-            .bind(completed_at)
-            .bind(available_at)
-            .bind(now)
-            .fetch_optional(&state.pool)
-            .await?
-        } else {
-            None
-        }
-    } else {
-        sqlx::query_scalar(
-            r#"
-            update bot_actions
-            set status = 'FAILED', completed_at = $5, failure_code = $3, failure_reason = $4, updated_at = $5
-            where id = $1 and status = 'CLAIMED' and claimed_by = $2
-            returning status
-            "#,
-        )
-        .bind(action_id)
-        .bind(&worker_id)
-        .bind(failure_code.as_deref())
-        .bind(failure_reason.as_deref())
-        .bind(now)
-        .fetch_optional(&state.pool)
-        .await?
-    };
+    let updated_status = update_bot_action_status(
+        &state.pool,
+        action_id,
+        &worker_id,
+        &outcome,
+        failure_code.as_deref(),
+        failure_reason.as_deref(),
+        now,
+    )
+    .await?;
 
     let state_changed = updated_status.is_some();
-    let status = if let Some(status) = updated_status {
-        status
-    } else {
-        let existing: Option<BotActionResultStateRow> = sqlx::query_as(
-            "select status, claimed_by, failure_code, failure_reason from bot_actions where id = $1",
-        )
-        .bind(action_id)
-        .fetch_optional(&state.pool)
-        .await?;
-        let Some(existing) = existing else {
-            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
-        };
-        if !is_idempotent_bot_action_result(
-            &outcome,
-            &existing.status,
-            existing.claimed_by.as_deref(),
-            &worker_id,
-            (
-                existing.failure_code.as_deref(),
-                existing.failure_reason.as_deref(),
-            ),
-            (failure_code.as_deref(), failure_reason.as_deref()),
-        ) {
-            return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
-        }
-        existing.status
-    };
+    let status = resolve_bot_action_result_status(
+        &state.pool,
+        action_id,
+        &worker_id,
+        &outcome,
+        failure_code.as_deref(),
+        failure_reason.as_deref(),
+        updated_status,
+    )
+    .await?;
 
     if state_changed {
         insert_audit(
@@ -2013,6 +1953,210 @@ async fn internal_v2_bot_action_result(
         id: action_id,
         status,
     }))
+}
+
+fn normalize_bot_action_outcome(raw: &str) -> ApiResult<String> {
+    let outcome = raw.to_uppercase();
+    if matches!(
+        outcome.as_str(),
+        "SUCCEEDED" | "RETRYABLE_FAILURE" | "FAILED"
+    ) {
+        return Ok(outcome);
+    }
+
+    Err(ApiError::validation(
+        "outcome must be SUCCEEDED, RETRYABLE_FAILURE, or FAILED",
+    ))
+}
+
+fn bot_action_failure_reason(outcome: &str, failure_message: Option<String>) -> Option<String> {
+    match outcome {
+        "RETRYABLE_FAILURE" => {
+            Some(failure_message.unwrap_or_else(|| "retry requested".to_string()))
+        }
+        "FAILED" => Some(failure_message.unwrap_or_else(|| "unknown failure".to_string())),
+        _ => None,
+    }
+}
+
+async fn update_bot_action_status(
+    pool: &sqlx::PgPool,
+    action_id: Uuid,
+    worker_id: &str,
+    outcome: &str,
+    failure_code: Option<&str>,
+    failure_reason: Option<&str>,
+    now: chrono::DateTime<Utc>,
+) -> ApiResult<Option<String>> {
+    match outcome {
+        "SUCCEEDED" => mark_bot_action_succeeded(pool, action_id, worker_id, now).await,
+        "RETRYABLE_FAILURE" => {
+            mark_bot_action_retryable_failure(
+                pool,
+                action_id,
+                worker_id,
+                failure_code,
+                failure_reason,
+                now,
+            )
+            .await
+        }
+        _ => {
+            mark_bot_action_failed(
+                pool,
+                action_id,
+                worker_id,
+                failure_code,
+                failure_reason,
+                now,
+            )
+            .await
+        }
+    }
+}
+
+async fn mark_bot_action_succeeded(
+    pool: &sqlx::PgPool,
+    action_id: Uuid,
+    worker_id: &str,
+    now: chrono::DateTime<Utc>,
+) -> ApiResult<Option<String>> {
+    Ok(sqlx::query_scalar(
+        r#"
+        update bot_actions
+        set status = 'DONE', completed_at = $3, failure_code = null, failure_reason = null, updated_at = $3
+        where id = $1 and status = 'CLAIMED' and claimed_by = $2
+        returning status
+        "#,
+    )
+    .bind(action_id)
+    .bind(worker_id)
+    .bind(now)
+    .fetch_optional(pool)
+    .await?)
+}
+
+async fn mark_bot_action_retryable_failure(
+    pool: &sqlx::PgPool,
+    action_id: Uuid,
+    worker_id: &str,
+    failure_code: Option<&str>,
+    failure_reason: Option<&str>,
+    now: chrono::DateTime<Utc>,
+) -> ApiResult<Option<String>> {
+    let attempts: Option<i32> = sqlx::query_scalar(
+        "select attempts from bot_actions where id = $1 and status = 'CLAIMED' and claimed_by = $2",
+    )
+    .bind(action_id)
+    .bind(worker_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(attempts) = attempts else {
+        return Ok(None);
+    };
+    let (next_status, completed_at, available_at) = bot_action_retry_schedule(attempts, now);
+
+    Ok(sqlx::query_scalar(
+        r#"
+        update bot_actions
+        set status = $3, claimed_by = $2, claimed_at = null, failure_code = $4,
+            failure_reason = $5, completed_at = $6, available_at = $7, updated_at = $8
+        where id = $1 and status = 'CLAIMED' and claimed_by = $2
+        returning status
+        "#,
+    )
+    .bind(action_id)
+    .bind(worker_id)
+    .bind(next_status)
+    .bind(failure_code)
+    .bind(failure_reason)
+    .bind(completed_at)
+    .bind(available_at)
+    .bind(now)
+    .fetch_optional(pool)
+    .await?)
+}
+
+fn bot_action_retry_schedule(
+    attempts: i32,
+    now: chrono::DateTime<Utc>,
+) -> (
+    &'static str,
+    Option<chrono::DateTime<Utc>>,
+    chrono::DateTime<Utc>,
+) {
+    if attempts >= BOT_ACTION_MAX_ATTEMPTS {
+        return ("FAILED", Some(now), now);
+    }
+
+    (
+        "PENDING",
+        None,
+        now + Duration::seconds(bot_action_retry_delay_seconds(attempts)),
+    )
+}
+
+async fn mark_bot_action_failed(
+    pool: &sqlx::PgPool,
+    action_id: Uuid,
+    worker_id: &str,
+    failure_code: Option<&str>,
+    failure_reason: Option<&str>,
+    now: chrono::DateTime<Utc>,
+) -> ApiResult<Option<String>> {
+    Ok(sqlx::query_scalar(
+        r#"
+        update bot_actions
+        set status = 'FAILED', completed_at = $5, failure_code = $3, failure_reason = $4, updated_at = $5
+        where id = $1 and status = 'CLAIMED' and claimed_by = $2
+        returning status
+        "#,
+    )
+    .bind(action_id)
+    .bind(worker_id)
+    .bind(failure_code)
+    .bind(failure_reason)
+    .bind(now)
+    .fetch_optional(pool)
+    .await?)
+}
+
+async fn resolve_bot_action_result_status(
+    pool: &sqlx::PgPool,
+    action_id: Uuid,
+    worker_id: &str,
+    outcome: &str,
+    failure_code: Option<&str>,
+    failure_reason: Option<&str>,
+    updated_status: Option<String>,
+) -> ApiResult<String> {
+    if let Some(status) = updated_status {
+        return Ok(status);
+    }
+
+    let existing: Option<BotActionResultStateRow> = sqlx::query_as(
+        "select status, claimed_by, failure_code, failure_reason from bot_actions where id = $1",
+    )
+    .bind(action_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(existing) = existing else {
+        return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
+    };
+    if !is_idempotent_bot_action_result(
+        outcome,
+        &existing.status,
+        existing.claimed_by.as_deref(),
+        worker_id,
+        (
+            existing.failure_code.as_deref(),
+            existing.failure_reason.as_deref(),
+        ),
+        (failure_code, failure_reason),
+    ) {
+        return Err(ApiError::Conflict("BOT_ACTION_NOT_CLAIMED_BY_WORKER"));
+    }
+    Ok(existing.status)
 }
 
 struct PrCommentAction<'a> {
