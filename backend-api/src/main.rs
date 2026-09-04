@@ -5,6 +5,7 @@ mod models;
 mod routes;
 mod services;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use app::AppState;
@@ -36,7 +37,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
     tracing::info!(host = %config.host, port = config.port, "backend-api listening");
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

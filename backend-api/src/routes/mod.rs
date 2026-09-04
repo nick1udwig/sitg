@@ -1,9 +1,9 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, net::{IpAddr, SocketAddr}, sync::Arc};
 
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect},
     routing::{delete, get, post, put},
@@ -116,9 +116,13 @@ async fn healthz() -> impl IntoResponse {
 
 async fn auth_github_start(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Query(query): Query<AuthStartQuery>,
 ) -> ApiResult<Redirect> {
-    state.rate_limiter.check("auth:start:global", 100, 60)?;
+    state
+        .rate_limiter
+        .check(&auth_rate_limit_key("start", peer_addr, &headers), 100, 60)?;
     let oauth_state = build_token(32);
     let now = Utc::now();
 
@@ -141,10 +145,16 @@ async fn auth_github_start(
 
 async fn auth_github_callback(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Query(query): Query<AuthCallbackQuery>,
     jar: CookieJar,
 ) -> ApiResult<(CookieJar, Redirect)> {
-    state.rate_limiter.check("auth:callback:global", 100, 60)?;
+    state.rate_limiter.check(
+        &auth_rate_limit_key("callback", peer_addr, &headers),
+        100,
+        60,
+    )?;
     let redirect_after: Option<String> = if let Some(oauth_state) = query.state.as_deref() {
         sqlx::query_scalar(
             "delete from oauth_states where state = $1 and expires_at > $2 returning redirect_after",
@@ -2353,6 +2363,26 @@ fn build_token(size: usize) -> String {
         .collect()
 }
 
+fn auth_rate_limit_key(endpoint: &str, peer_addr: SocketAddr, headers: &HeaderMap) -> String {
+    let client_ip = trusted_client_ip(peer_addr, headers);
+    format!("auth:{endpoint}:{client_ip}")
+}
+
+fn trusted_client_ip(peer_addr: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    if peer_addr.ip().is_loopback() {
+        if let Some(forwarded_ip) = headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next())
+            .and_then(|value| value.trim().parse::<IpAddr>().ok())
+        {
+            return forwarded_ip;
+        }
+    }
+
+    peer_addr.ip()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2618,6 +2648,50 @@ mod tests {
     fn generates_token_with_expected_length() {
         let token = build_token(24);
         assert_eq!(token.len(), 24);
+    }
+
+    #[test]
+    fn oauth_rate_limit_keys_use_trusted_client_ips() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            axum::http::HeaderValue::from_static("203.0.113.10, 127.0.0.1"),
+        );
+
+        let proxied_peer = SocketAddr::from(([127, 0, 0, 1], 43210));
+        assert_eq!(
+            auth_rate_limit_key("start", proxied_peer, &headers),
+            "auth:start:203.0.113.10"
+        );
+
+        let direct_peer = SocketAddr::from(([198, 51, 100, 20], 43210));
+        assert_eq!(
+            auth_rate_limit_key("start", direct_peer, &headers),
+            "auth:start:198.51.100.20"
+        );
+        assert_ne!(
+            auth_rate_limit_key("start", direct_peer, &headers),
+            auth_rate_limit_key(
+                "start",
+                SocketAddr::from(([198, 51, 100, 21], 43210)),
+                &headers,
+            )
+        );
+    }
+
+    #[test]
+    fn oauth_rate_limit_key_falls_back_when_forwarded_ip_is_invalid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            axum::http::HeaderValue::from_static("not-an-ip"),
+        );
+        let peer = SocketAddr::from(([127, 0, 0, 1], 43210));
+
+        assert_eq!(
+            auth_rate_limit_key("callback", peer, &headers),
+            "auth:callback:127.0.0.1"
+        );
     }
 
     #[test]
