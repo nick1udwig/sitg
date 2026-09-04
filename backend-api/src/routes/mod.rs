@@ -1,4 +1,9 @@
-use std::{collections::HashSet, net::{IpAddr, SocketAddr}, sync::Arc};
+use std::{
+    collections::HashSet,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration as StdDuration,
+};
 
 use axum::{
     Json, Router,
@@ -114,8 +119,33 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(CorsLayer::permissive())
 }
 
-async fn healthz() -> impl IntoResponse {
-    Json(json!({ "status": "ok" }))
+async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let database_ready = match tokio::time::timeout(
+        StdDuration::from_secs(2),
+        sqlx::query_scalar::<_, i32>("select 1").fetch_one(&state.pool),
+    )
+    .await
+    {
+        Ok(Ok(1)) => true,
+        Ok(Ok(_)) => false,
+        Ok(Err(error)) => {
+            tracing::warn!(error = %error, "health check database query failed");
+            false
+        }
+        Err(_) => {
+            tracing::warn!("health check database query timed out");
+            false
+        }
+    };
+
+    if database_ready {
+        (StatusCode::OK, Json(json!({ "status": "ok" })))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "status": "unavailable" })),
+        )
+    }
 }
 
 async fn auth_github_start(
@@ -2624,6 +2654,37 @@ mod tests {
                 .collect(),
         );
         assert!(matches!(too_many, Err(ApiError::Validation(_))));
+    }
+
+    #[tokio::test]
+    async fn healthz_returns_service_unavailable_when_database_is_down() {
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(StdDuration::from_millis(100))
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/sitg")
+            .expect("lazy pool");
+        let state = Arc::new(AppState::new(
+            pool,
+            test_config("postgres://postgres:postgres@127.0.0.1:1/sitg"),
+        ));
+
+        let response = healthz(State(state)).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable DATABASE_URL postgres"]
+    async fn healthz_returns_ok_when_database_is_queryable() {
+        let database_url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL must be set for the route integration test");
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("connect to route test database");
+        let state = Arc::new(AppState::new(pool, test_config(&database_url)));
+
+        let response = healthz(State(state)).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
