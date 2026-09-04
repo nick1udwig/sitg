@@ -39,6 +39,7 @@ export function OwnerPage() {
   const [configForm, setConfigForm] = useState<RepoConfigFormState>(DEFAULT_FORM);
   const [whitelistInput, setWhitelistInput] = useState('');
   const [loadingConfig, setLoadingConfig] = useState(false);
+  const [loadedRepoId, setLoadedRepoId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<OwnerTabId>('repo-info');
   const [signInStarting, setSignInStarting] = useState(false);
 
@@ -75,18 +76,17 @@ export function OwnerPage() {
     void getOwnedRepos()
       .then((repos) => {
         if (!mounted) return;
-        if (repos) {
-          setRepoOptions(repos);
-          if (repos.length) {
-            const selectedId = state.selectedRepo?.id ?? '';
-            const selectedIsOwned = repos.some((repo) => String(repo.id) === selectedId);
-            if (!selectedIsOwned) {
-              const first = repos[0];
-              setRepo({ id: String(first.id), fullName: first.full_name });
-              if (selectedId) {
-                pushNotice('info', 'Switched to an owned repository because the previous selection is no longer available.');
-              }
-            }
+        const availableRepos = repos ?? [];
+        setRepoOptions(availableRepos);
+        const selectedId = state.selectedRepo?.id ?? '';
+        const selectedIsOwned = availableRepos.some((repo) => String(repo.id) === selectedId);
+        if (!selectedIsOwned) {
+          const first = availableRepos[0];
+          setRepo(first ? { id: String(first.id), fullName: first.full_name } : null);
+          if (selectedId) {
+            pushNotice('info', first
+              ? 'Switched to an owned repository because the previous selection is no longer available.'
+              : 'The previous repository is no longer available.');
           }
         }
       })
@@ -101,19 +101,32 @@ export function OwnerPage() {
       });
 
     return () => { mounted = false; };
-  }, [state.me, state.selectedRepo?.id, setMe, setRepo, pushNotice]);
+  }, [state.me, setMe, setRepo, pushNotice]);
 
   useEffect(() => {
     if (!selectedOwnedRepo || !state.me) {
       setConfig(null);
       setInstallStatus(null);
+      setConfigForm(DEFAULT_FORM);
+      setLoadedRepoId(null);
+      setLoadingConfig(false);
       return;
     }
 
     let mounted = true;
+    setConfig(null);
+    setInstallStatus(null);
+    setConfigForm(DEFAULT_FORM);
+    setLoadedRepoId(null);
     setLoadingConfig(true);
 
-    void Promise.all([getRepoConfig(selectedOwnedRepo.id).catch(() => null), getInstallStatus(selectedOwnedRepo.id).catch(() => null)])
+    const optionalConfig = getRepoConfig(selectedOwnedRepo.id).catch((error: unknown) => {
+      const apiError = error as ApiError;
+      if (apiError.status === 404 || apiError.code === 'NOT_FOUND') return null;
+      throw error;
+    });
+
+    void Promise.all([optionalConfig, getInstallStatus(selectedOwnedRepo.id)])
       .then(([repoConfig, install]) => {
         if (!mounted) return;
 
@@ -129,26 +142,46 @@ export function OwnerPage() {
         }
 
         setInstallStatus(install);
+        setLoadedRepoId(selectedOwnedRepo.id);
       })
       .catch((error) => {
-        if (mounted) pushNotice('error', toUserMessage(error));
+        if (!mounted) return;
+        setConfig(null);
+        setInstallStatus(null);
+        setConfigForm(DEFAULT_FORM);
+        setLoadedRepoId(selectedOwnedRepo.id);
+        if (isSessionExpiredError(error)) {
+          setMe(null);
+          pushNotice('info', 'Session expired, please sign in again.');
+        } else {
+          pushNotice('error', toUserMessage(error));
+        }
       })
       .finally(() => {
         if (mounted) setLoadingConfig(false);
       });
 
     return () => { mounted = false; };
-  }, [selectedOwnedRepo, state.me, pushNotice]);
+  }, [selectedOwnedRepo, state.me, setMe, pushNotice]);
+
+  const detailsAreCurrent = Boolean(
+    selectedOwnedRepo
+    && loadedRepoId === selectedOwnedRepo.id
+  );
+  const displayedConfig = detailsAreCurrent ? config : null;
+  const displayedInstallStatus = detailsAreCurrent ? installStatus : null;
+  const displayedConfigForm = detailsAreCurrent ? configForm : DEFAULT_FORM;
+  const detailsLoading = Boolean(selectedOwnedRepo && (!detailsAreCurrent || loadingConfig));
 
   const summary = useMemo(() => {
-    if (!config) {
+    if (!displayedConfig) {
       return {
-        enforcedEth: configForm.inputMode === 'ETH' ? configForm.inputValue : 'pending',
+        enforcedEth: displayedConfigForm.inputMode === 'ETH' ? displayedConfigForm.inputValue : 'pending',
         usdEstimate: 'pending'
       };
     }
-    return { enforcedEth: config.threshold.eth, usdEstimate: config.threshold.usd_estimate };
-  }, [config, configForm]);
+    return { enforcedEth: displayedConfig.threshold.eth, usdEstimate: displayedConfig.threshold.usd_estimate };
+  }, [displayedConfig, displayedConfigForm]);
 
   const handleSaveConfig = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -212,10 +245,10 @@ export function OwnerPage() {
   };
 
   const installUrl = import.meta.env.VITE_GITHUB_APP_INSTALL_URL ?? '';
-  const installStatusView = installStatus
-    ? !installStatus.installed
+  const installStatusView = displayedInstallStatus
+    ? !displayedInstallStatus.installed
       ? 'not-installed'
-      : installStatus.repo_connected
+      : displayedInstallStatus.repo_connected
         ? 'connected'
         : 'not-connected'
     : 'unknown';
@@ -254,8 +287,7 @@ export function OwnerPage() {
     <div className="owner-shell">
       <OwnerSidebar
         repoOptions={repoOptions}
-        recentRepos={state.recentRepos}
-        selectedRepo={selectedRepo}
+        selectedRepo={selectedOwnedRepo}
         onSelectRepo={setRepo}
         onResolveRepoByFullName={handleResolveRepoByFullName}
         isBusy={isBusy}
@@ -264,17 +296,17 @@ export function OwnerPage() {
         <OwnerTabs active={activeTab} onSelect={setActiveTab} />
         {activeTab === 'repo-info' && (
           <RepoInfoTab
-            selectedRepo={selectedRepo}
+            selectedRepo={selectedOwnedRepo}
             installStatus={installStatusView}
-            installDetails={installStatus}
+            installDetails={displayedInstallStatus}
             installUrl={installUrl}
           />
         )}
         {activeTab === 'threshold-whitelist' && (
           <ThresholdWhitelistTab
-            selectedRepo={selectedRepo}
+            selectedRepo={selectedOwnedRepo}
             installStatus={installStatusView}
-            configForm={configForm}
+            configForm={displayedConfigForm}
             onConfigFormChange={setConfigForm}
             summary={summary}
             whitelistInput={whitelistInput}
@@ -283,7 +315,7 @@ export function OwnerPage() {
             onSaveWhitelist={handleSaveWhitelist}
             isBusy={isBusy}
             isAuthed={Boolean(state.me)}
-            loadingConfig={loadingConfig}
+            loadingConfig={detailsLoading}
           />
         )}
       </main>

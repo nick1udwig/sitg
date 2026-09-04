@@ -4,7 +4,6 @@ import type { RepoOption } from '../types';
 
 interface OwnerSidebarProps {
   repoOptions: RepoOption[];
-  recentRepos: RepoSelection[];
   selectedRepo: RepoSelection | null;
   onSelectRepo: (repo: RepoSelection) => void;
   onResolveRepoByFullName: (fullName: string) => Promise<RepoSelection | null>;
@@ -13,7 +12,6 @@ interface OwnerSidebarProps {
 
 export function OwnerSidebar({
   repoOptions,
-  recentRepos,
   selectedRepo,
   onSelectRepo,
   onResolveRepoByFullName,
@@ -34,16 +32,7 @@ export function OwnerSidebar({
     return withoutPrefix.replace(/\/+$/, '').replace(/\.git$/i, '');
   };
 
-  const merged = new Map<string, { id: string; fullName: string }>();
-  for (const repo of repoOptions) {
-    merged.set(String(repo.id), { id: String(repo.id), fullName: repo.full_name });
-  }
-  for (const repo of recentRepos) {
-    if (!merged.has(repo.id)) {
-      merged.set(repo.id, repo);
-    }
-  }
-  const repoList = Array.from(merged.values());
+  const repoList = repoOptions.map((repo) => ({ id: String(repo.id), fullName: repo.full_name }));
 
   const handleAdd = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();

@@ -26,7 +26,7 @@ interface AppState {
 
 type Action =
   | { type: 'set_me'; payload: MeResponse | null }
-  | { type: 'set_repo'; payload: RepoSelection }
+  | { type: 'set_repo'; payload: RepoSelection | null }
   | { type: 'set_busy'; key: string; value: boolean }
   | { type: 'add_notice'; payload: Omit<Notice, 'id'> }
   | { type: 'dismiss_notice'; id: number }
@@ -86,10 +86,15 @@ function reducer(state: AppState, action: Action): AppState {
     case 'set_me':
       return { ...state, me: action.payload };
     case 'set_repo': {
-      const without = state.recentRepos.filter((repo) => repo.id !== action.payload.id);
-      const nextRecent = [action.payload, ...without].slice(0, 8);
-      persistRepos(nextRecent, action.payload);
-      return { ...state, selectedRepo: action.payload, recentRepos: nextRecent };
+      if (!action.payload) {
+        localStorage.removeItem(SELECTED_REPO_KEY);
+        return { ...state, selectedRepo: null };
+      }
+      const selected = action.payload;
+      const without = state.recentRepos.filter((repo) => repo.id !== selected.id);
+      const nextRecent = [selected, ...without].slice(0, 8);
+      persistRepos(nextRecent, selected);
+      return { ...state, selectedRepo: selected, recentRepos: nextRecent };
     }
     case 'set_busy':
       return { ...state, busy: { ...state.busy, [action.key]: action.value } };
@@ -109,7 +114,7 @@ function reducer(state: AppState, action: Action): AppState {
 interface AppStateValue {
   state: AppState;
   setMe: (me: MeResponse | null) => void;
-  setRepo: (repo: RepoSelection) => void;
+  setRepo: (repo: RepoSelection | null) => void;
   isBusy: (key: string) => boolean;
   runBusy: <T>(key: string, fn: () => Promise<T>) => Promise<T | null>;
   pushNotice: (type: Notice['type'], message: string) => void;
@@ -126,7 +131,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'set_me', payload: me });
   }, []);
 
-  const setRepo = useCallback((repo: RepoSelection) => {
+  const setRepo = useCallback((repo: RepoSelection | null) => {
     dispatch({ type: 'set_repo', payload: repo });
   }, []);
 

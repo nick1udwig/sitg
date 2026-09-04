@@ -57,11 +57,11 @@ describe('OwnerPage flow', () => {
     vi.clearAllMocks();
     localStorage.clear();
 
-    apiMocks.getOwnedRepos.mockResolvedValue([
+    apiMocks.getOwnedRepos.mockReset().mockResolvedValue([
       { id: 999, full_name: 'owner/repo' },
       { id: 888, full_name: 'owner/other' }
     ]);
-    apiMocks.getRepoConfig.mockResolvedValue({
+    apiMocks.getRepoConfig.mockReset().mockResolvedValue({
       github_repo_id: 999,
       threshold: {
         wei: '1000000000000000000',
@@ -78,14 +78,14 @@ describe('OwnerPage flow', () => {
       },
       draft_prs_gated: true
     });
-    apiMocks.getInstallStatus.mockResolvedValue({
+    apiMocks.getInstallStatus.mockReset().mockResolvedValue({
       installed: true,
       installation_id: 123,
       installation_account_login: 'owner',
       installation_account_type: 'User',
       repo_connected: true
     });
-    apiMocks.putRepoConfig.mockResolvedValue({
+    apiMocks.putRepoConfig.mockReset().mockResolvedValue({
       github_repo_id: 999,
       threshold: {
         wei: '120000000000000000',
@@ -102,12 +102,12 @@ describe('OwnerPage flow', () => {
       },
       draft_prs_gated: false
     });
-    apiMocks.resolveWhitelistLogins.mockResolvedValue({
+    apiMocks.resolveWhitelistLogins.mockReset().mockResolvedValue({
       resolved: [{ github_user_id: 3003, github_login: 'alice' }],
       unresolved: ['ghost']
     });
-    apiMocks.putWhitelist.mockResolvedValue(undefined);
-    apiMocks.logout.mockResolvedValue(undefined);
+    apiMocks.putWhitelist.mockReset().mockResolvedValue(undefined);
+    apiMocks.logout.mockReset().mockResolvedValue(undefined);
   });
 
   it('covers repository config, whitelist, and repo info github app metadata', async () => {
@@ -242,5 +242,46 @@ describe('OwnerPage flow', () => {
     expect(
       screen.getByText('Connect this repository in the GitHub App to unlock Threshold and Whitelist settings.')
     ).toBeTruthy();
+  });
+
+  it('does not expose the previous repository form while new details are loading', async () => {
+    const firstConfig = await apiMocks.getRepoConfig('999');
+    apiMocks.getRepoConfig.mockClear();
+    let resolveSecondConfig!: (value: typeof firstConfig) => void;
+    apiMocks.getRepoConfig.mockImplementation((repoId: string) => {
+      if (repoId === '888') {
+        return new Promise((resolve) => { resolveSecondConfig = resolve; });
+      }
+      return Promise.resolve(firstConfig);
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('button', { name: 'owner/repo' });
+    await user.click(screen.getByRole('button', { name: 'Threshold & Whitelist' }));
+    await waitFor(() => expect((screen.getByLabelText('Value') as HTMLInputElement).value).toBe('1'));
+
+    await user.click(screen.getByRole('button', { name: 'owner/other' }));
+    expect((screen.getByLabelText('Value') as HTMLInputElement).value).toBe('0.10');
+    expect((screen.getByRole('button', { name: 'Save Config' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByLabelText('Loading repo config')).toBeTruthy();
+
+    resolveSecondConfig({
+      ...firstConfig,
+      github_repo_id: 888,
+      threshold: { ...firstConfig.threshold, input_value: '2', eth: '2' }
+    });
+    await waitFor(() => expect((screen.getByLabelText('Value') as HTMLInputElement).value).toBe('2'));
+  });
+
+  it('expires the session when loading repository details returns 401', async () => {
+    apiMocks.getRepoConfig.mockRejectedValue({
+      status: 401,
+      code: 'UNAUTHENTICATED',
+      message: 'unauthenticated'
+    });
+
+    renderPage();
+    expect(await screen.findByRole('button', { name: 'Sign in with GitHub' })).toBeTruthy();
   });
 });

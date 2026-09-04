@@ -45,8 +45,8 @@ export function ThresholdWhitelistTab({
   loadingConfig
 }: ThresholdWhitelistTabProps) {
   const repoConnected = installStatus === 'connected';
-  const saveConfigDisabled = isBusy('save-config') || !selectedRepo || !isAuthed || !repoConnected;
-  const saveWhitelistDisabled = isBusy('save-whitelist') || !selectedRepo || !isAuthed || !repoConnected;
+  const saveConfigDisabled = loadingConfig || isBusy('save-config') || !selectedRepo || !isAuthed || !repoConnected;
+  const saveWhitelistDisabled = loadingConfig || isBusy('save-whitelist') || !selectedRepo || !isAuthed || !repoConnected;
   const cardsLocked = !repoConnected;
   const connectionHelp = installStatus === 'not-connected'
     ? 'Connect this repository in the GitHub App to unlock Threshold and Whitelist settings.'

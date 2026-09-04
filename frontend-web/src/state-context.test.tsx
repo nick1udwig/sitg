@@ -9,6 +9,7 @@ function Harness() {
   return (
     <div>
       <button onClick={() => setRepo({ id: '1', fullName: 'org/repo' })}>set repo</button>
+      <button onClick={() => setRepo(null)}>clear repo</button>
       <button onClick={() => pushNotice('success', 'ok')}>notice</button>
       <button onClick={() => { if (state.notices.length) dismissNotice(state.notices[0].id); }}>dismiss</button>
       <p data-testid="repo">{state.selectedRepo?.fullName ?? 'none'}</p>
@@ -28,6 +29,10 @@ describe('AppStateProvider', () => {
 
     await user.click(screen.getByText('set repo'));
     expect(screen.getByTestId('repo').textContent).toBe('org/repo');
+
+    await user.click(screen.getByText('clear repo'));
+    expect(screen.getByTestId('repo').textContent).toBe('none');
+    expect(localStorage.getItem('sitg.selectedRepo')).toBeNull();
 
     await user.click(screen.getByText('notice'));
     expect(screen.getByTestId('notice-count').textContent).toBe('1');
