@@ -287,9 +287,6 @@ async fn auth_logout(
 
 async fn me(State(state): State<Arc<AppState>>, jar: CookieJar) -> ApiResult<Json<MeResponse>> {
     let user = require_current_user(&state, &jar).await?;
-    state
-        .rate_limiter
-        .check(&format!("wallet:challenge:{}", user.id), 20, 60)?;
     Ok(Json(MeResponse {
         id: user.id.to_string(),
         github_user_id: user.github_user_id,
@@ -980,6 +977,9 @@ async fn wallet_link_challenge(
     jar: CookieJar,
 ) -> ApiResult<Json<WalletLinkChallengeResponse>> {
     let user = require_current_user(&state, &jar).await?;
+    state
+        .rate_limiter
+        .check(&format!("wallet:challenge:{}", user.id), 20, 60)?;
     let now = Utc::now();
     let nonce = Uuid::new_v4();
     // Postgres stores timestamptz with microsecond precision; normalize before issuing message.
@@ -2358,7 +2358,24 @@ mod tests {
     use super::*;
     use crate::{config::Config, models::db::RepoConfigRow};
     use chrono::{TimeZone, Timelike};
-    use sqlx::postgres::PgPoolOptions;
+    use sqlx::{PgPool, postgres::PgPoolOptions};
+
+    fn test_config(database_url: &str) -> Config {
+        Config {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            database_url: database_url.to_string(),
+            db_max_connections: 10,
+            app_base_url: "https://sitg.io".to_string(),
+            api_base_url: "https://sitg.io".to_string(),
+            github_client_id: None,
+            github_client_secret: None,
+            session_cookie_name: "sitg_session".to_string(),
+            blocked_unlink_wallets: vec![],
+            base_rpc_url: "https://mainnet.base.org".to_string(),
+            staking_contract_address: "0x1111111111111111111111111111111111111111".to_string(),
+        }
+    }
 
     #[test]
     fn converts_eth_to_wei() {
@@ -2436,21 +2453,10 @@ mod tests {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/sitg_test")
             .expect("lazy pool");
-        let config = Config {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            database_url: "postgres://localhost/sitg".to_string(),
-            db_max_connections: 1,
-            app_base_url: "https://sitg.io".to_string(),
-            api_base_url: "https://sitg.io".to_string(),
-            github_client_id: None,
-            github_client_secret: None,
-            session_cookie_name: "sitg_session".to_string(),
-            blocked_unlink_wallets: vec![],
-            base_rpc_url: "https://mainnet.base.org".to_string(),
-            staking_contract_address: "0x1111111111111111111111111111111111111111".to_string(),
-        };
-        let state = Arc::new(AppState::new(pool, config));
+        let state = Arc::new(AppState::new(
+            pool,
+            test_config("postgres://localhost/sitg"),
+        ));
 
         let result = get_stake_status(
             State(state),
@@ -2462,6 +2468,86 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(ApiError::Unauthenticated)));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable DATABASE_URL postgres"]
+    async fn me_does_not_consume_wallet_challenge_quota() {
+        let database_url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL must be set for the route integration test");
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("connect to route test database");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("apply migrations");
+
+        let user_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let session_token = format!("wallet-quota-test-{}", Uuid::new_v4());
+        let github_user_id = 8_000_000_000_i64 + i64::from(rand::random::<u32>());
+        let now = Utc::now();
+        sqlx::query(
+            "insert into users (id, github_user_id, github_login, created_at, updated_at) values ($1, $2, $3, $4, $4)",
+        )
+        .bind(user_id)
+        .bind(github_user_id)
+        .bind(format!("wallet-quota-{github_user_id}"))
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert test user");
+        sqlx::query(
+            "insert into user_sessions (id, user_id, session_token, github_access_token, expires_at, created_at, revoked_at) values ($1, $2, $3, null, $4, $5, null)",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(&session_token)
+        .bind(now + Duration::hours(1))
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert test session");
+
+        let state = Arc::new(AppState::new(pool.clone(), test_config(&database_url)));
+        let session_jar = || {
+            CookieJar::new().add(Cookie::new(
+                state.config.session_cookie_name.clone(),
+                session_token.clone(),
+            ))
+        };
+
+        for _ in 0..25 {
+            let _ = me(State(Arc::clone(&state)), session_jar())
+                .await
+                .expect("identity reads must not consume wallet challenge quota");
+        }
+        for _ in 0..20 {
+            let _ = wallet_link_challenge(State(Arc::clone(&state)), session_jar())
+                .await
+                .expect("wallet challenge within quota");
+        }
+        let error = wallet_link_challenge(State(Arc::clone(&state)), session_jar())
+            .await
+            .expect_err("wallet challenge above quota must be rejected");
+        assert!(matches!(error, ApiError::Conflict("RATE_LIMITED")));
+
+        sqlx::query("delete from wallet_link_challenges where user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("clean wallet challenges");
+        sqlx::query("delete from user_sessions where id = $1")
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .expect("clean session");
+        sqlx::query("delete from users where id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("clean user");
     }
 
     #[test]
