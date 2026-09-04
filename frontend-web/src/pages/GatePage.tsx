@@ -13,7 +13,7 @@ import {
   submitGateConfirmation
 } from '../api';
 import { toUserMessage } from '../lib/error-map';
-import { gateBlockingMessage, parseCountdown } from '../lib/gate';
+import { gateBlockingMessage, gateReadyMessage, parseCountdown } from '../lib/gate';
 import { normalizeConfirmTypedData } from '../lib/eip712';
 import { assertTypedDataUsesStakingContract, stakingContractAddress } from '../lib/staking';
 import { useAppState } from '../state';
@@ -23,7 +23,9 @@ import type { GateResponse, StakeStatusResponse, StakingConfigResponse, WalletLi
 const STATUS_STYLES: Record<string, { dot: string; badge: string }> = {
   PENDING: { dot: 'amber', badge: 'warn' },
   VERIFIED: { dot: 'green', badge: 'ok' },
-  TIMED_OUT_CLOSED: { dot: 'red', badge: 'err' }
+  EXEMPT: { dot: 'green', badge: 'ok' },
+  TIMED_OUT_CLOSED: { dot: 'red', badge: 'err' },
+  CANCELED: { dot: 'red', badge: 'err' }
 };
 
 function countdownMinutes(countdown: string): number {
@@ -611,7 +613,7 @@ export function GatePage() {
         {blockingMessage ? (
           <div className="error-bar">{blockingMessage}</div>
         ) : (
-          <div className="success-bar">Ready for verification.</div>
+          <div className="success-bar">{gateReadyMessage(gate)}</div>
         )}
 
         {!hasGitHub && (

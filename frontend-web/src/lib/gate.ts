@@ -13,12 +13,18 @@ export function parseCountdown(deadlineAt: string, now = Date.now()): string {
 }
 
 export function gateBlockingMessage(gate: GateResponse, me: MeResponse | null, now = Date.now()): string | null {
-  if (gate.status === 'TIMED_OUT_CLOSED') {
-    return 'This challenge expired and the PR was closed.';
-  }
-
-  if (gate.status === 'VERIFIED') {
-    return null;
+  switch (gate.status) {
+    case 'VERIFIED':
+    case 'EXEMPT':
+      return null;
+    case 'TIMED_OUT_CLOSED':
+      return 'This challenge expired and the PR was closed.';
+    case 'CANCELED':
+      return 'This challenge was canceled because the pull request changed or closed.';
+    case 'PENDING':
+      break;
+    default:
+      return 'This challenge is no longer active.';
   }
 
   if (new Date(gate.deadline_at).getTime() <= now) {
@@ -29,9 +35,19 @@ export function gateBlockingMessage(gate: GateResponse, me: MeResponse | null, n
     return 'Sign in with GitHub to continue.';
   }
 
-  if (me.github_login !== gate.github_pr_author_login) {
+  if (me.github_user_id !== gate.github_pr_author_id) {
     return 'Wrong GitHub account for this challenge.';
   }
 
   return null;
+}
+
+export function gateReadyMessage(gate: GateResponse): string {
+  if (gate.status === 'VERIFIED') {
+    return 'This pull request has been verified.';
+  }
+  if (gate.status === 'EXEMPT') {
+    return 'This contributor is exempt; no verification is required.';
+  }
+  return 'Ready for verification.';
 }
