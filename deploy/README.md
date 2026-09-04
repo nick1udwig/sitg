@@ -9,7 +9,7 @@ Production deployment templates:
 - `deploy/systemd/sitg-backend.service`: backend systemd unit.
 - `deploy/systemd/sitg-bot-worker.service`: bot systemd unit (single instance).
 - `deploy/systemd/sitg-bot-worker@.service`: bot systemd template for multi-replica instances.
-- `deploy/caddy/Caddyfile`: Caddy config for serving frontend + proxying `/api`.
+- `deploy/caddy/Caddyfile`: Caddy config for serving the frontend and proxying `/api`, `/internal/v2`, and `/healthz` to the backend.
 
 See:
 - `docs/16-centralized-bot-deployment.md` for centralized bot-worker production rollout.

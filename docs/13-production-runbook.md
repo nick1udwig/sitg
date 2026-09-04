@@ -149,12 +149,15 @@ sudo systemctl reload caddy
 ```
 
 Caddy manages TLS certificates automatically when DNS points to the host and ports `80/443` are open.
+The bundled Caddyfile serves static assets from `/opt/sitg/frontend-web/dist` and forwards both browser `/api/*` requests and signed bot `/internal/v2/*` requests to the backend.
 
 ### 7. Verify
 
 ```bash
 curl -fsS https://sitg.io/healthz
 curl -I https://sitg.io/
+test "$(curl -sS -o /dev/null -w '%{http_code}' https://sitg.io/api/v1/me)" = "401"
+test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST https://sitg.io/internal/v2/bot-actions/claim -H 'content-type: application/json' --data '{"worker_id":"routing-probe","limit":1}')" = "403"
 ```
 
 ## Owner bot deployment (one per owner)

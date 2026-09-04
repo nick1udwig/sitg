@@ -1,17 +1,21 @@
 sitg.io {
-  encode zstd gzip
+	encode zstd gzip
 
-  route {
-    handle /api/* {
-      reverse_proxy 127.0.0.1:8080
-    }
+	route {
+		handle /api/* {
+			reverse_proxy 127.0.0.1:8080
+		}
 
-    handle /healthz {
-      reverse_proxy 127.0.0.1:8080
-    }
+		handle /internal/v2/* {
+			reverse_proxy 127.0.0.1:8080
+		}
 
-    root * ~/git/sitg/frontend-web/dist
-    try_files {path} /index.html
-    file_server
-  }
+		handle /healthz {
+			reverse_proxy 127.0.0.1:8080
+		}
+
+		root * /opt/sitg/frontend-web/dist
+		try_files {path} /index.html
+		file_server
+	}
 }
