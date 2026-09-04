@@ -101,22 +101,6 @@ export async function getMe(): Promise<MeResponse | null> {
 export async function githubSignIn(redirectAfter?: string): Promise<void> {
   const redirect = redirectAfter ? `?redirect_after=${encodeURIComponent(redirectAfter)}` : '';
   const url = `${API_BASE}/api/v1/auth/github/start${redirect}`;
-
-  const res = await fetch(url, { credentials: 'include', redirect: 'manual' });
-  if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
-    window.location.href = url;
-    return;
-  }
-
-  const ct = res.headers.get('content-type') ?? '';
-  if (ct.includes('text/html')) {
-    throw makeApiError(
-      'GitHub sign-in is not available. The API is not reachable — check your deployment.',
-      res.status,
-      'SIGN_IN_UNAVAILABLE'
-    );
-  }
-
   window.location.href = url;
 }
 

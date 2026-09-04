@@ -7,6 +7,7 @@ import {
   getStakeStatus,
   getStakingConfig,
   getWalletLinkStatus,
+  githubSignIn,
   putRepoConfig,
   requestWalletLinkChallenge,
   resolveWhitelistLogins,
@@ -48,6 +49,16 @@ describe('api client', () => {
       code: 'INTERNAL_ERROR',
       message: 'database unavailable'
     });
+  });
+
+  it('starts GitHub sign-in without a state-creating preflight request', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await githubSignIn('https://sitg.io/owner?tab=setup');
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
   it('sends wallet link confirm payload', async () => {
